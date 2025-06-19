@@ -12,7 +12,7 @@ from transformers import (
     CONFIG_MAPPING
 )
 
-from transformers.utils import can_return_tuple, LossKwargs
+from transformers.utils import can_return_tuple, LossKwargs, is_torchdynamo_compiling
 from transformers.processing_utils import Unpack
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from transformers.activations import ACT2FN
@@ -86,15 +86,13 @@ class LlavaCodeConfig(PretrainedConfig):
     ```"""
 
     model_type = "llava_next"
-    attribute_map = {
-        "image_token_id": "image_token_index",
-    }
     sub_configs = {"text_config": AutoConfig, "structure_config": AutoConfig}
 
     def __init__(
         self,
         structure_config=None,
         text_config=None,
+        structure_token_id=25782,
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
@@ -104,6 +102,7 @@ class LlavaCodeConfig(PretrainedConfig):
         self.multimodal_projector_bias = multimodal_projector_bias
 
         self.structure_config = structure_config
+        self.structure_token_id = structure_token_id
 
         if isinstance(text_config, dict):
             text_config["model_type"] = text_config["model_type"] if "model_type" in text_config else "llama"
@@ -160,9 +159,9 @@ class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
-        image_hidden_states (`torch.FloatTensor`, *optional*):
+        structure_hidden_states (`torch.FloatTensor`, *optional*):
             A `torch.FloatTensor` of size `(batch_size, num_images, sequence_length, hidden_size)`.
-            image_hidden_states of the model produced by the vision encoder and after projecting the last hidden state.
+            structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
     """
 
     structure_hidden_states: Optional[torch.FloatTensor] = None
@@ -204,7 +203,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         self.image_newline = nn.Parameter(torch.randn(config.text_config.hidden_size, dtype=self.dtype) * embed_std)
 
         self.vocab_size = config.text_config.vocab_size
-        self.language_model = AutoModel.from_config(config.text_config)
+        self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
 
@@ -214,15 +213,11 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
     def set_input_embeddings(self, value):
         self.language_model.set_input_embeddings(value)
 
-    def load_weights(self):
-        print('Loading weights...')
-
     def get_structure_features(self, structure_values):
         # structure values: ast tree sequence input_ids
-        _, ast_embedding = self.model(structure_values)
+        _, ast_embedding = self.structure_model(structure_values)
         structure_features = self.multi_modal_projector(ast_embedding)
 
-        print('ast shapes: ', ast.embedding.shape, structure_features.shape)
         return structure_features
 
     @can_return_tuple
@@ -256,11 +251,18 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids) # from language model only
 
+
         if structure_values is not None:
             structure_features = self.get_structure_features(structure_values)
+
+            special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
+            print('special structure mask:', special_structure_mask)
+            special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
         
         print('Args:', attention_mask.shape, position_ids.shape, inputs_embeds.shape)
+        print('attention_mask:', attention_mask)
         print('Cache:', use_cache, 'hidden states:', output_hidden_states, 'output attentions', output_attentions)
         print('past_key_values', type(past_key_values))
         print('kwargs:', kwargs)
@@ -321,9 +323,9 @@ class LlavaCodeCausalLMOutputWithPast(ModelOutput):
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
-        image_hidden_states (`torch.FloatTensor`, *optional*):
+        structure_hidden_states (`torch.FloatTensor`, *optional*):
             A `torch.FloatTensor` of size (batch_size * num_patches, num_images, sequence_length, hidden_size)`.
-            image_hidden_states of the model produced by the vision encoder and after projecting the last hidden state.
+            structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -385,6 +387,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     def forward(
         self,
         input_ids: torch.LongTensor = None,
+        structure_values: torch.FloatTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -436,6 +439,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         outputs = self.model(
             input_ids,
+            structure_values=structure_values,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
