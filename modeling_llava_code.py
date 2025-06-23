@@ -12,13 +12,18 @@ from transformers import (
     CONFIG_MAPPING
 )
 
-from transformers.utils import can_return_tuple, LossKwargs, is_torchdynamo_compiling
+from transformers.utils import can_return_tuple, LossKwargs
 from transformers.processing_utils import Unpack
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from transformers.activations import ACT2FN
+from transformers.trainer_pt_utils import get_parameter_names
+from transformers.optimization import get_linear_schedule_with_warmup, get_inverse_sqrt_schedule
+
+from pytorch_lightning import LightningModule
 
 import torch
 import torch.nn as nn
+from torch.optim import AdamW
 import math
 
 from dataclasses import dataclass
@@ -38,29 +43,16 @@ class LlavaCodeConfig(PretrainedConfig):
     documentation from [`PretrainedConfig`] for more information.
 
     Args:
-        vision_config (`Union[AutoConfig, dict]`,  *optional*, defaults to `CLIPVisionConfig`):
-            The config object or dictionary of the vision backbone.
+        structure_config (`Union[AutoConfig, dict]`,  *optional*, defaults to `CLIPVisionConfig`):
+            The config object or dictionary of the structure backbone.
         text_config (`Union[AutoConfig, dict]`, *optional*, defaults to `LlamaConfig`):
             The config object or dictionary of the text backbone.
-        image_token_index (`int`, *optional*, defaults to 32000):
-            The image token index to encode the image prompt.
+        structure_token_index (`int`, *optional*, defaults to 25782):
+            The structure token index to encode the structure prompt.
         projector_hidden_act (`str`, *optional*, defaults to `"gelu"`):
             The activation function used by the multimodal projector.
-        vision_feature_select_strategy (`str`, *optional*, defaults to `"default"`):
-            The feature selection strategy used to select the vision feature from the vision backbone.
-            Can be one of `"default"` or `"full"`. If `"default"`, the CLS token is removed from the vision features.
-            If `"full"`, the full vision features are used.
-        vision_feature_layer (`Union[int, List[int]]`, *optional*, defaults to -2):
-            The index of the layer to select the vision feature. If multiple indices are provided,
-            the vision feature of the corresponding indices will be concatenated to form the
-            vision features.
-        image_grid_pinpoints (`List`, *optional*, defaults to `[[336, 672], [672, 336], [672, 672], [1008, 336], [336, 1008]]`):
-            A list of possible resolutions to use for processing high resolution images. Each item in the list should be a tuple or list
-            of the form `(height, width)`.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether the model's input and output word embeddings should be tied.
-        image_seq_length (`int`, *optional*, defaults to 576):
-            Sequence length of one image embedding.
         multimodal_projector_bias (`bool`, *optional*, defaults to `True`):
             Whether to use bias in the multimodal projector.
 
@@ -68,9 +60,6 @@ class LlavaCodeConfig(PretrainedConfig):
 
     ```python
     >>> from transformers import LlavaNextForConditionalGeneration, LlavaNextConfig, CLIPVisionConfig, LlamaConfig
-
-    >>> # Initializing a CLIP-vision config
-    >>> vision_config = CLIPVisionConfig()
 
     >>> # Initializing a Llama config
     >>> text_config = LlamaConfig()
@@ -134,6 +123,7 @@ class LlavaCodeMultiModalProjector(nn.Module):
         hidden_states = self.linear_2(hidden_states)
         return hidden_states
 
+
 @dataclass
 class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
     """
@@ -189,7 +179,6 @@ class LlavaCodePreTrainedModel(PreTrainedModel):
                 module.bias.data.zero_()
         elif isinstance(module, LlavaCodeModel):
             embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
-            module.image_newline.data.normal_(mean=0.0, std=embed_std)
 
 class LlavaCodeModel(LlavaCodePreTrainedModel):
     _checkpoint_conversion_mapping = {"language_model.model": "language_model"}
@@ -200,7 +189,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
 
         self.multi_modal_projector = LlavaCodeMultiModalProjector(config)
         embed_std = 1 / math.sqrt(config.text_config.hidden_size)
-        self.image_newline = nn.Parameter(torch.randn(config.text_config.hidden_size, dtype=self.dtype) * embed_std)
 
         self.vocab_size = config.text_config.vocab_size
         self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
@@ -251,21 +239,21 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids) # from language model only
 
-
         if structure_values is not None:
             structure_features = self.get_structure_features(structure_values)
 
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
-            print('special structure mask:', special_structure_mask)
+            # print('special structure mask:', special_structure_mask)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
+            # print('special structure mask after expand:', special_structure_mask.shape)
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
-        
-        print('Args:', attention_mask.shape, position_ids.shape, inputs_embeds.shape)
-        print('attention_mask:', attention_mask)
-        print('Cache:', use_cache, 'hidden states:', output_hidden_states, 'output attentions', output_attentions)
-        print('past_key_values', type(past_key_values))
-        print('kwargs:', kwargs)
+
+        # print('Args:', attention_mask.shape, inputs_embeds.shape)
+        # print('attention_mask:', attention_mask)
+        # print('Cache:', use_cache, 'hidden states:', output_hidden_states, 'output attentions', output_attentions)
+        # print('past_key_values', type(past_key_values))
+        # print('kwargs:', kwargs)
 
         outputs = self.language_model(
             # input_ids: Optional[torch.Tensor] = None,
@@ -283,9 +271,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             return_dict=True,
             **kwargs
         )
-        print('last hidden state shape', outputs.last_hidden_state.shape)
-        print(outputs[0].shape)
-        print()
+        # print('last hidden state shape', outputs.last_hidden_state.shape)
+        # print(outputs[0].shape)
+        # print()
 
         return LlavaCodeModelOutputWithPast(
             last_hidden_state=outputs.last_hidden_state,
@@ -336,12 +324,11 @@ class LlavaCodeCausalLMOutputWithPast(ModelOutput):
     structure_hidden_states: Optional[torch.FloatTensor] = None
 
 
-class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixin):
+class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixin, LightningModule):
     _checkpoint_conversion_mapping = {
         "^language_model.model": "model.language_model",
-        "^vision_tower": "model.vision_tower",
+        "^structure_model": "model.structure_model",
         "^multi_modal_projector": "model.multi_modal_projector",
-        "^image_newline": "model.image_newline",
         "^language_model.lm_head": "lm_head",
     }
     _tied_weights_keys = ["lm_head.weight"]
@@ -351,6 +338,46 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.model = LlavaCodeModel(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.post_init()
+
+        self.mle_loss = torch.nn.CrossEntropyLoss()
+        self.vocab_size = self.config.text_config.vocab_size
+
+    def set_trainer_args(self, trainer_args):
+        self.trainer_args = trainer_args
+
+    def setup(self, stage):
+        if stage == 'fit':
+            # Hyperparamters and Configuration
+            self.num_nodes = self.trainer_args.num_nodes
+            self.dropout_p = self.trainer_args.dropout_p
+            self.functional_dropout = self.trainer_args.functional_dropout
+            self.pad_token_id = self.trainer_args.pad_token_id
+
+            self.lr = self.trainer_args.lr
+            self.weight_decay = self.trainer_args.weight_decay
+            self.num_warmup_steps = self.trainer_args.warmup_steps
+            self.num_epochs = self.trainer_args.max_epochs
+            self.train_batch_size = self.trainer_args.train_batch_size
+            self.num_train_examples = self.trainer_args.num_training_examples
+            self.num_gpu_per_node = self.trainer_args.devices
+            self.accumulate_grad_batches = self.trainer_args.accumulate_grad_batches
+
+            if self.trainer_args.max_steps == -1:
+                num_steps_per_epoch = self.num_train_examples // (self.num_gpu_per_node * self.num_nodes * self.accumulate_grad_batches)
+                self.num_training_steps = self.num_epochs * num_steps_per_epoch
+                print(f"steps_per_epoch: {num_steps_per_epoch}\t total_training_steps: {self.num_training_steps}.")
+            else:
+                self.num_training_steps = self.trainer_args.max_steps
+
+            self.no_scheduling = self.trainer_args.no_scheduling
+            self.inv_sqrt_scheduling = self.trainer_args.inv_sqrt_scheduling
+            self.world_size = self.trainer_args.devices * self.num_nodes
+            # Loss Configuration
+            self.loss = self.trainer_args.loss
+            assert self.loss in ["MLE_Only", "ContraCLM", "ContraCLMTok", "ContraCLMSeq", "Repoformer"], \
+                f"Loss: `{self.loss}` is not supported!"
+
+            self.validation_step_outputs = []
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -401,36 +428,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         **kwargs: Unpack[LossKwargs],
     ) -> Union[Tuple, LlavaCodeCausalLMOutputWithPast]:
         r"""
-        vision_feature_select_strategy (`str`, *optional*, defaults to `"default"`):
-            The feature selection strategy used to select the vision feature from the vision backbone.
-            Can be one of `"default"` or `"full"`. If `"default"`, the CLS token is removed from the vision features.
-            If `"full"`, the full vision features are used.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-        Example:
-
-        ```python
-        >>> from PIL import Image
-        >>> import requests
-        >>> from transformers import AutoProcessor, LlavaNextForConditionalGeneration
-
-        >>> model = LlavaNextForConditionalGeneration.from_pretrained("llava-hf/llava-v1.6-mistral-7b-hf")
-        >>> processor = AutoProcessor.from_pretrained("llava-hf/llava-v1.6-mistral-7b-hf")
-
-        >>> prompt = "[INST] <image>\nWhat is shown in this image? [/INST]"
-        >>> url = "https://www.ilankelman.org/stopsigns/australia.jpg"
-        >>> image = Image.open(requests.get(url, stream=True).raw)
-
-        >>> inputs = processor(images=image, text=prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(**inputs, max_length=30)
-        >>> processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "[INST]  \nWhat is shown in this image? [/INST] The image appears to be a radar chart, which is a type of multi-dimensional plot (...)"
-        ```"""
+        """
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -472,7 +474,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             structure_hidden_states=outputs.structure_hidden_states,
         )
 
-
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -483,7 +484,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         logits_to_keep=None,
         **kwargs,
     ):
-        # Overwritten -- in specific circumstances we don't want to forward image inputs to the model
+        # Overwritten -- in specific circumstances we don't want to forward structure values to the model
 
         model_inputs = super().prepare_inputs_for_generation(
             input_ids,
@@ -496,3 +497,78 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         )
 
         return model_inputs
+
+    def get_inputs_and_labels(self, token_ids):
+        inp_tensor = token_ids[:, :-1].clone()
+
+        lbl_tensor = token_ids[:, 1:].clone()
+        lbl_tensor[lbl_tensor[:, :] == self.pad_token_id] = -100
+
+        attention_mask = torch.ones_like(inp_tensor)
+        attention_mask = attention_mask.masked_fill(inp_tensor.eq(self.pad_token_id), 0.0).type(torch.bool)
+
+        return inp_tensor, lbl_tensor, attention_mask
+
+    def training_step(self, batch, batch_idx):
+        token_ids, ast_ids = batch['input_ids'], batch['ast_ids']
+        input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
+        # first forward pass
+        logits = self(input_ids=input_ids,
+                      attention_mask=attention_mask,
+                      structure_values=ast_ids).logits
+
+        loss = self.mle_loss(logits.view(-1, self.vocab_size), labels.view(-1))
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        eval_fct = torch.nn.CrossEntropyLoss()
+        token_ids, ast_ids = batch['input_ids'], batch['ast_ids']
+        input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
+        logits = self(input_ids=input_ids,
+                      attention_mask=attention_mask,
+                      structure_values=ast_ids).logits
+        loss = eval_fct(logits.view(-1, self.vocab_size), labels.view(-1))
+        self.validation_step_outputs.append(loss)
+        print('Validation loss:', loss)
+        return loss
+
+    def on_validation_epoch_end(self):
+        val_loss = torch.stack(self.validation_step_outputs).mean()
+        perplexity = torch.exp(val_loss)
+        self.log("Valid/Loss/MLE", val_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Valid/Loss/Perplexity", perplexity, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.validation_step_outputs.clear()  # free memory
+
+    def configure_optimizers(self):
+        decay_parameters = get_parameter_names(self.model, [torch.nn.LayerNorm])
+        decay_parameters = [name for name in decay_parameters if "bias" not in name]
+        optim_groups = [
+            {
+                "params": [
+                    p for n, p in self.model.named_parameters()
+                    if n in decay_parameters and p.requires_grad
+                ],
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in self.model.named_parameters()
+                    if n not in decay_parameters and p.requires_grad
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        # optimizer = FusedAdam(optim_groups, lr=self.lr)
+        optimizer = AdamW(optim_groups, lr=self.lr)
+
+        if self.no_scheduling:
+            return optimizer
+        if self.inv_sqrt_scheduling:
+            scheduler = get_inverse_sqrt_schedule(optimizer, num_warmup_steps=self.num_warmup_steps)
+        else:
+            scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                        num_warmup_steps=self.num_warmup_steps,
+                                                        num_training_steps=self.num_training_steps)
+        return [optimizer], [{"scheduler": scheduler, "interval": "step", "frequency": 1}]
