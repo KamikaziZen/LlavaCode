@@ -81,7 +81,7 @@ class LlavaCodeConfig(PretrainedConfig):
         self,
         structure_config=None,
         text_config=None,
-        structure_token_id=25782,
+        structure_token_id=None,
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
@@ -91,7 +91,6 @@ class LlavaCodeConfig(PretrainedConfig):
         self.multimodal_projector_bias = multimodal_projector_bias
 
         self.structure_config = structure_config
-        self.structure_token_id = structure_token_id
 
         if isinstance(text_config, dict):
             text_config["model_type"] = text_config["model_type"] if "model_type" in text_config else "llama"
@@ -100,6 +99,8 @@ class LlavaCodeConfig(PretrainedConfig):
             text_config = CONFIG_MAPPING["llama"]()
 
         self.text_config = text_config
+
+        self.structure_token_id = structure_token_id
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
@@ -241,19 +242,10 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
 
         if structure_values is not None:
             structure_features = self.get_structure_features(structure_values)
-
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
-            # print('special structure mask:', special_structure_mask)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
-            # print('special structure mask after expand:', special_structure_mask.shape)
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
-
-        # print('Args:', attention_mask.shape, inputs_embeds.shape)
-        # print('attention_mask:', attention_mask)
-        # print('Cache:', use_cache, 'hidden states:', output_hidden_states, 'output attentions', output_attentions)
-        # print('past_key_values', type(past_key_values))
-        # print('kwargs:', kwargs)
 
         outputs = self.language_model(
             # input_ids: Optional[torch.Tensor] = None,
@@ -271,9 +263,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             return_dict=True,
             **kwargs
         )
-        # print('last hidden state shape', outputs.last_hidden_state.shape)
-        # print(outputs[0].shape)
-        # print()
 
         return LlavaCodeModelOutputWithPast(
             last_hidden_state=outputs.last_hidden_state,
@@ -337,10 +326,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         super().__init__(config)
         self.model = LlavaCodeModel(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
-        self.post_init()
 
         self.mle_loss = torch.nn.CrossEntropyLoss()
         self.vocab_size = self.config.text_config.vocab_size
+        self.language_model.resize_token_embeddings(self.vocab_size)
+
+        self.post_init()
 
     def set_trainer_args(self, trainer_args):
         self.trainer_args = trainer_args
@@ -462,7 +453,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         loss = None
         if labels is not None:
             loss = self.loss_function(
-                logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size, **kwargs
+                logits=logits, labels=labels, vocab_size=self.vocab_size, **kwargs
             )
 
         return LlavaCodeCausalLMOutputWithPast(
@@ -518,6 +509,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                       structure_values=ast_ids).logits
 
         loss = self.mle_loss(logits.view(-1, self.vocab_size), labels.view(-1))
+        self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -529,7 +521,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                       structure_values=ast_ids).logits
         loss = eval_fct(logits.view(-1, self.vocab_size), labels.view(-1))
         self.validation_step_outputs.append(loss)
-        print('Validation loss:', loss)
         return loss
 
     def on_validation_epoch_end(self):

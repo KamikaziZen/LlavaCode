@@ -20,15 +20,19 @@ class LLMDataset(Dataset):
                  code_tokenizer=None,
                  max_seq_length=2048,
                  pad_token_id=0,
-                 # ">:<" - this is a KOSTYL, maybe add another token?
-                 structure_token_id=25782):
+                 structure_token_id=None):
         super(LLMDataset, self).__init__()
         self.data = data
         self.pad_token_id = pad_token_id
         self.max_seq_length = max_seq_length
         self.code_tokenizer = code_tokenizer
         self.ast_tokenizer = ast_tokenizer
-        self.structure_token_id = structure_token_id
+
+        if structure_token_id is not None:
+            self.structure_token_id = structure_token_id
+        else:
+            # choosing token_id that is not used by the code_tokenizer
+            self.structure_token_id = self.code_tokenizer.vocab_size
 
     def __len__(self):
         return len(self.data)
@@ -40,13 +44,15 @@ class LLMDataset(Dataset):
         fim_prefix, fim_suffix, fim_middle = torch.tensor([1]), torch.tensor([3]), torch.tensor([2])
         left_context = torch.tensor(self.data[ind]['lc_token_ids'])
         right_context = torch.tensor(self.data[ind]['rc_token_ids'])
+        target = torch.tensor(self.data[ind]['tgt_token_ids'])
         source_tokens = torch.cat([
             fim_prefix,
             left_context,
+            torch.tensor([self.structure_token_id]),
             fim_suffix,
             right_context,
             fim_middle,
-            torch.tensor([self.structure_token_id])])
+            target])
         seq_length = len(source_tokens)
         # TODO: remove hardcoded seq length and pad_token_id, use data collator with padding instead?
         source_tokens = F.pad(

@@ -27,7 +27,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--accelerator", type=str, help="Number of gpu/cpu cores to use", default="gpu")
     parser.add_argument("--log_every_n_steps", type=int, help="Logging frequency (in update steps)", default=100)
     parser.add_argument("--accumulate_grad_batches", type=int, help="Gradient accumulation steps", default=1) 
-    parser.add_argument("--gradient_clip_val", type=float, default=1.0, help="Gradient clipping value")
+    parser.add_argument("--gradient_clip_val", type=float, help="Gradient clipping value")
     parser.add_argument("--num_training_examples", type=int, default=-1, help="Number of training examples")
     parser.add_argument("--max_steps", type=int, default=-1, help="Number of training steps")
     parser.add_argument("--max_epochs", type=int, default=-1, help="Number of training epochs")
@@ -61,12 +61,6 @@ def add_model_args(parent_parser):
     parser.add_argument("--loss", type=str, help="Loss function name", default="MLE_Only", choices=["MLE_Only",  "Repoformer"])
     # args for repoformer    
     parser.add_argument("--full_sequence_code_completion_loss", action='store_true')
-    parser.add_argument("--separate_cfc_token_loss", action='store_true')
-    parser.add_argument("--cfc_token_loss_lambda", type=float, default=None)
-    parser.add_argument("--replace_cfc_end_with_fim_middle", action='store_true')
-    parser.add_argument("--cfc_in_rc", action='store_true')
-    parser.add_argument("--has_neg_retrieval", action='store_true')
-    parser.add_argument("--valid_with_cfc_f1", action='store_true')
     parser.add_argument("--debug_disable_adding_new_token", action='store_true')
     return parent_parser
 
