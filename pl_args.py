@@ -6,8 +6,7 @@ import torch
 
 def add_program_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--expt_prefix", type=str, help="can use the training data name as experment name", 
-        default="BigQuery")
+    parser.add_argument("--data_prefix", type=str, help="can use the training data name as experment name", default='')
     parser.add_argument("--train_datadir", type=str, help="path to the processed [PyPI + BigQuery] or [Wikitext_103] .arrow dataset")
     parser.add_argument("--valid_datadir", type=str, help="path to the processed [PyPI + BigQuery] or [Wikitext_103] .arrow dataset")
     parser.add_argument("--log_dir", type=str, default="../results/", help="Path of the Tensorboard log directory")
@@ -34,7 +33,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--default_root_dir", type=str, required=True, help="Root dir")
     parser.add_argument("--use_deepspeed", action="store_true", help="Use DeepSpeed")
     parser.add_argument("--debug_cuda_mem", action="store_true", help="Print GPU util")
-    parser.add_argument("--precision", type=int, default=32, help="training precision")
+    parser.add_argument("--precision", type=str, default='16-mixed', help="training precision")
     parser.add_argument("--ds_config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepspeed', 'stage2.json'), help="deepspeed config")
     return parent_parser
 
@@ -49,8 +48,7 @@ def add_model_args(parent_parser):
     parser.add_argument("--dropout_p", type=float, default=0.1, help="Value of dropout probability to be added")
     parser.add_argument("--functional_dropout", action="store_true", help="If True, will use functional dropout on the token level representations")
     # training
-    parser.add_argument("--no_scheduling", action="store_true", help="If True, will not use linear warmup with scheduling")
-    parser.add_argument("--inv_sqrt_scheduling", action="store_true", help="If True, will use inverse square root schedule as in PICL.")
+    parser.add_argument("--lr_scheduler_type", type=str, default='linear', help="One of ['None', 'cosine', 'inv_sqrt', 'linear']")
     parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--weight_decay", type=float, default=0., help="L2 regularization")

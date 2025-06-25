@@ -1,0 +1,31 @@
+#!/bin/bash
+
+CUDA_VISIBLE_DEVICES=1 python train_projection.py \
+    --num_workers 96 \
+    --devices 1 \
+    --num_nodes 1 \
+    --accelerator gpu \
+    --text_model_id bigcode/starcoderbase-1b \
+    --structure_model_id microsoft/unixcoder-base \
+    --pad_token_id 0 \
+    --dropout_p 0. \
+    --default_root_dir ./ \
+    --data_prefix repoformer \
+    --train_datadir ./data/python/repoformer/train \
+    --valid_datadir ./data/python/repoformer/valid \
+    --log_dir ./logs/ \
+    --seed 1234 \
+    --lr 2e-3 \
+    --lr_scheduler_type cosine \
+    --weight_decay 0. \
+    --max_steps -1 \
+    --max_epochs 1 \
+    --warmup_steps 100 \
+    --train_batch_size 16 \
+    --valid_batch_size 16 \
+    --accumulate_grad_batches 2 \
+    --log_every_n_steps 20 \
+    --save_step_frequency 100000 \
+    --val_check_interval 100 \
+    --debug_cuda_mem \
+    --precision 'bf16-mixed'

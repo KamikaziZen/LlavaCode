@@ -17,7 +17,11 @@ from transformers.processing_utils import Unpack
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from transformers.activations import ACT2FN
 from transformers.trainer_pt_utils import get_parameter_names
-from transformers.optimization import get_linear_schedule_with_warmup, get_inverse_sqrt_schedule
+from transformers.optimization import (
+    get_linear_schedule_with_warmup, 
+    get_inverse_sqrt_schedule,
+    get_cosine_schedule_with_warmup
+)
 
 from pytorch_lightning import LightningModule
 
@@ -360,8 +364,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             else:
                 self.num_training_steps = self.trainer_args.max_steps
 
-            self.no_scheduling = self.trainer_args.no_scheduling
-            self.inv_sqrt_scheduling = self.trainer_args.inv_sqrt_scheduling
+            self.lr_scheduler_type = self.trainer_args.lr_scheduler_type
             self.world_size = self.trainer_args.devices * self.num_nodes
             # Loss Configuration
             self.loss = self.trainer_args.loss
@@ -554,12 +557,19 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         # optimizer = FusedAdam(optim_groups, lr=self.lr)
         optimizer = AdamW(optim_groups, lr=self.lr)
 
-        if self.no_scheduling:
+        if self.lr_scheduler_type == 'None':
             return optimizer
-        if self.inv_sqrt_scheduling:
+        if self.lr_scheduler_type == 'inv_sqrt':
             scheduler = get_inverse_sqrt_schedule(optimizer, num_warmup_steps=self.num_warmup_steps)
-        else:
+        elif self.lr_scheduler_type == 'linear':
             scheduler = get_linear_schedule_with_warmup(optimizer,
                                                         num_warmup_steps=self.num_warmup_steps,
                                                         num_training_steps=self.num_training_steps)
+        elif self.lr_scheduler_type == 'cosine':
+            scheduler = get_cosine_schedule_with_warmup(optimizer,
+                                                        num_warmup_steps=self.num_warmup_steps,
+                                                        num_training_steps=self.num_training_steps)
+        else:
+            raise ValueError('Unrecognized lr scheduler name: {}'.format(self.lr_scheduler_type))
+
         return [optimizer], [{"scheduler": scheduler, "interval": "step", "frequency": 1}]
