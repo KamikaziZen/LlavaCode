@@ -56,15 +56,21 @@ if __name__ == "__main__":
     # User gives validation check interval in terms of number of steps, PL requires in terms of batches
     args.val_check_interval *= args.accumulate_grad_batches
 
+    code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
+    code_tokenizer.add_tokens(['<CODE_STRUCTURE>'])
+    if code_tokenizer.pad_token_id is None:
+        code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
+
     structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
     text_config.vocab_size = text_config.vocab_size + 1 # for a new <CODE_STRUCTURE>
-    configuration = LlavaCodeConfig(structure_config, text_config, structure_token_id=49152)
+    configuration = LlavaCodeConfig(structure_config, text_config,
+                                    pad_token_id=code_tokenizer.pad_token_id,
+                                    structure_token_id=49152)
 
     model = LlavaCodeForConditionalGeneration(configuration)
-    code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id)
 
     # freezing everything but the multi_model_projector parameters
     for p in model.model.structure_model.parameters():
@@ -85,7 +91,8 @@ if __name__ == "__main__":
         args.valid_batch_size,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
-        ast_tokenizer=model.model.structure_model.tokenizer
+        ast_tokenizer=model.model.structure_model.tokenizer,
+        structure_token_id=49152
     )
     data.setup()
     args.num_training_examples = len(data.train_dataloader())

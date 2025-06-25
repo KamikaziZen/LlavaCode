@@ -86,6 +86,7 @@ class LlavaCodeConfig(PretrainedConfig):
         structure_config=None,
         text_config=None,
         structure_token_id=None,
+        pad_token_id=0,
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
@@ -105,6 +106,7 @@ class LlavaCodeConfig(PretrainedConfig):
         self.text_config = text_config
 
         self.structure_token_id = structure_token_id
+        self.pad_token_id = pad_token_id
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
@@ -206,18 +208,28 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
     def set_input_embeddings(self, value):
         self.language_model.set_input_embeddings(value)
 
-    def get_structure_features(self, structure_values):
-        # structure values: ast tree sequence input_ids
-        _, ast_embedding = self.structure_model(structure_values)
-        structure_features = self.multi_modal_projector(ast_embedding)
+    def get_structure_features(self, structure_values, nums_structure_tokens):
+        # structure values: ast tree sequence ids
+        # nums_structure_tokens: number of structure tokens for each sample in a batch
+        max_num = nums_structure_tokens.max()
+        row_ids = torch.arange(max_num).expand(len(nums_structure_tokens), max_num).to(nums_structure_tokens.device)
+        mask = row_ids < nums_structure_tokens.unsqueeze(1)
+        flat_mask = mask.flatten()
 
+        _, ast_embedding = self.structure_model(structure_values.reshape(-1, 512))
+        # taking only those features that correspond to code_structure tokens
+        # others fully consist of padding
+        ast_embedding = ast_embedding[flat_mask]
+
+        structure_features = self.multi_modal_projector(ast_embedding)
         return structure_features
 
     @can_return_tuple
     def forward(
         self,
         input_ids: torch.LongTensor = None,
-        structure_values: torch.FloatTensor = None,
+        structure_values: torch.LongTensor = None,
+        num_structure_tokens: torch.IntTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -245,9 +257,10 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             inputs_embeds = self.get_input_embeddings()(input_ids) # from language model only
 
         if structure_values is not None:
-            structure_features = self.get_structure_features(structure_values)
+            structure_features = self.get_structure_features(structure_values, num_structure_tokens)
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
+            assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), 'ooops'
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
 
@@ -409,6 +422,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self,
         input_ids: torch.LongTensor = None,
         structure_values: torch.FloatTensor = None,
+        num_structure_tokens: torch.IntTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -436,6 +450,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         outputs = self.model(
             input_ids,
             structure_values=structure_values,
+            num_structure_tokens=num_structure_tokens,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
@@ -504,12 +519,13 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         return inp_tensor, lbl_tensor, attention_mask
 
     def training_step(self, batch, batch_idx):
-        token_ids, ast_ids = batch['input_ids'], batch['ast_ids']
+        token_ids, ast_ids, num_structure_tokens = batch['input_ids'], batch['ast_ids'], batch['num_structure_tokens']
         input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
         # first forward pass
         logits = self(input_ids=input_ids,
                       attention_mask=attention_mask,
-                      structure_values=ast_ids).logits
+                      structure_values=ast_ids,
+                      num_structure_tokens=num_structure_tokens).logits
 
         loss = self.mle_loss(logits.view(-1, self.vocab_size), labels.view(-1))
         self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
@@ -517,11 +533,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
     def validation_step(self, batch, batch_idx):
         eval_fct = torch.nn.CrossEntropyLoss()
-        token_ids, ast_ids = batch['input_ids'], batch['ast_ids']
+        token_ids, ast_ids, num_structure_tokens = batch['input_ids'], batch['ast_ids'], batch['num_structure_tokens']
         input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
         logits = self(input_ids=input_ids,
                       attention_mask=attention_mask,
-                      structure_values=ast_ids).logits
+                      structure_values=ast_ids,
+                      num_structure_tokens=num_structure_tokens).logits
         loss = eval_fct(logits.view(-1, self.vocab_size), labels.view(-1))
         self.validation_step_outputs.append(loss)
         return loss
