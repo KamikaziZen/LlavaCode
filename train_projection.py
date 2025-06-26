@@ -12,6 +12,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from pytorch_lightning import seed_everything
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
 from huggingface_hub import login
 from dotenv import load_dotenv
@@ -97,12 +98,21 @@ if __name__ == "__main__":
     data.setup()
     args.num_training_examples = len(data.train_dataloader())
 
+    callbacks = [LearningRateMonitor(logging_interval='step')]
+    checkpoint_callback = ModelCheckpoint(
+        save_top_k=1,
+        monitor="Valid/Loss/MLE",
+        mode="min",
+        every_n_train_steps=args.save_step_frequency
+    )
+    callbacks.append(checkpoint_callback)
+
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
-        # 'callbacks': callbacks,
+        'callbacks': callbacks,
         # 'logger': loggers,
-        # 'strategy': DeepSpeedStrategy(config=args.ds_config) \
-        #     if args.use_deepspeed else DDPStrategy(find_unused_parameters=False),
+        'strategy': DeepSpeedStrategy(config=args.ds_config) \
+            if args.use_deepspeed else DDPStrategy(find_unused_parameters=False),
         'num_nodes': args.num_nodes,
         # 'plugins': plugins,
         'precision': args.precision,
