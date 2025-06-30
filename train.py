@@ -42,6 +42,43 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+class CheckpointEveryNSteps(pl.Callback):
+    """
+    Save a checkpoint every N steps, instead of Lightning's default that checkpoints
+    based on validation loss.
+    """
+
+    def __init__(
+        self,
+        save_step_frequency=5000,
+        prefix="NStep-ckpt",
+        use_modelcheckpoint_filename=False,
+    ):
+        """
+        Args:
+            save_step_frequency: how often to save in steps
+            prefix: add a prefix to the name, only used if
+                use_modelcheckpoint_filename=False
+            use_modelcheckpoint_filename: just use the ModelCheckpoint callback's
+                default filename, don't use ours.
+        """
+        self.save_step_frequency = save_step_frequency
+        self.prefix = prefix
+        self.use_modelcheckpoint_filename = use_modelcheckpoint_filename
+
+    def on_batch_end(self, trainer: pl.Trainer, _):
+        """ Check if we should save a checkpoint after every train batch """
+        epoch = trainer.current_epoch
+        global_step = trainer.global_step
+        if (global_step > 0) and global_step % self.save_step_frequency == 0:
+            if self.use_modelcheckpoint_filename:
+                filename = trainer.checkpoint_callback.filename
+            else:
+                filename = f"{self.prefix}_{epoch=}_{global_step=}.ckpt"
+            ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
+            trainer.save_checkpoint(ckpt_path)
+
+
 if __name__ == "__main__":
 
     parser = add_program_args()
@@ -71,17 +108,26 @@ if __name__ == "__main__":
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=49152)
 
-    model = LlavaCodeForConditionalGeneration(configuration)
+    if args.resume_from_checkpoint:
+        model = LlavaCodeForConditionalGeneration.load_from_checkpoint(args.checkpoint_path, config=configuration)
+    else:
+        model = LlavaCodeForConditionalGeneration(configuration)
 
-    # freezing everything but the multi_model_projector parameters
+    # Stage 1: only projection is trained
+    # Stage 2: projection and llm are trained
+    # structure model weights are always frozen
     for p in model.model.structure_model.parameters():
         p.requires_grad = False
-    for p in model.model.language_model.parameters():
-        p.requires_grad = False
+
+    if args.training_stage == 1:
+        for p in model.model.language_model.parameters():
+            p.requires_grad = False
+
     trainable_params, all_params = 0, 0
     for name, param in model.named_parameters():
         all_params += param.numel()
         trainable_params += param.numel() * param.requires_grad
+    
     logger.info(f'Trainable parameters: {trainable_params}, All Parameters: {all_params}, Percentage: {trainable_params / all_params * 100 :.2f}%')
 
     data = DataModule(
@@ -98,6 +144,7 @@ if __name__ == "__main__":
     data.setup()
     args.num_training_examples = len(data.train_dataloader())
 
+    callbacks = []
     callbacks = [LearningRateMonitor(logging_interval='step')]
     checkpoint_callback = ModelCheckpoint(
         save_top_k=1,
@@ -106,6 +153,7 @@ if __name__ == "__main__":
         every_n_train_steps=args.save_step_frequency
     )
     callbacks.append(checkpoint_callback)
+    callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
@@ -124,6 +172,7 @@ if __name__ == "__main__":
         'log_every_n_steps':args.log_every_n_steps,
         'accumulate_grad_batches':args.accumulate_grad_batches,
         'gradient_clip_val':args.gradient_clip_val,
+        'gradient_clip_algorithm': 'norm',
         'default_root_dir':args.default_root_dir,
     }
     trainer = pl.Trainer(**custom_trainer_kwargs)
@@ -133,4 +182,4 @@ if __name__ == "__main__":
 
     trainer.fit(model, data)
 
-    logger.info('Finished trainingvim')
+    logger.info('Finished training')

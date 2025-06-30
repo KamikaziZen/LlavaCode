@@ -1,8 +1,8 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=1 python train_projection.py \
+CUDA_VISIBLE_DEVICES=0,3 python train.py \
     --num_workers 96 \
-    --devices 1 \
+    --devices 2 \
     --num_nodes 1 \
     --accelerator gpu \
     --text_model_id bigcode/starcoderbase-1b \
@@ -15,17 +15,20 @@ CUDA_VISIBLE_DEVICES=1 python train_projection.py \
     --valid_datadir ./data/python/repoformer/valid \
     --log_dir ./logs/ \
     --seed 1234 \
-    --lr 2e-3 \
+    --lr 2e-5 \
     --lr_scheduler_type cosine \
     --weight_decay 0. \
+    --gradient_clip_val 1.0 \
     --max_steps -1 \
     --max_epochs 1 \
     --warmup_steps 100 \
     --train_batch_size 16 \
     --valid_batch_size 16 \
-    --accumulate_grad_batches 2 \
+    --accumulate_grad_batches 4 \
+    --training_stage 2 \
+    --resume_from_checkpoint \
+    --checkpoint_path 'lightning_logs/version_9/checkpoints/epoch=4-step=3776.ckpt' \
     --log_every_n_steps 20 \
-    --save_step_frequency 100000 \
+    --save_step_frequency 500 \
     --val_check_interval 100 \
-    --debug_cuda_mem \
     --precision 'bf16-mixed'
