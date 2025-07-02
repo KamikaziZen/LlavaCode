@@ -4,6 +4,7 @@ from parser import (remove_comments_and_docstrings,
                    tree_to_variable_index)
 from tree_sitter import Language, Parser
 
+
 # Load tree-sitter parser
 parsers={}              
 # for lang in ['python','ruby','java','go','javascript','php','c','cpp','c_sharp']:

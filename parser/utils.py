@@ -1,6 +1,8 @@
 import re
 from io import StringIO
-import  tokenize
+import tokenize
+
+
 def remove_comments_and_docstrings(source,lang):
     if lang in ['python']:
         """

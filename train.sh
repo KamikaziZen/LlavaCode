@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0,3 python train.py \
+CUDA_VISIBLE_DEVICES=0,1 python train.py \
     --num_workers 96 \
     --devices 2 \
     --num_nodes 1 \
@@ -11,8 +11,8 @@ CUDA_VISIBLE_DEVICES=0,3 python train.py \
     --dropout_p 0. \
     --default_root_dir ./ \
     --data_prefix repoformer \
-    --train_datadir ./data/python/repoformer/train \
-    --valid_datadir ./data/python/repoformer/valid \
+    --train_datadir /home/jovyan/sukhorukov/codegen/data_python/prepared_data/processed/train \
+    --valid_datadir /home/jovyan/sukhorukov/codegen/data_python/prepared_data/processed/valid \
     --log_dir ./logs/ \
     --seed 1234 \
     --lr 2e-5 \

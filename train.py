@@ -132,9 +132,9 @@ if __name__ == "__main__":
 
     data = DataModule(
         args.data_prefix,
-        args.train_datadir, 
-        args.valid_datadir, 
-        args.train_batch_size, 
+        args.train_datadir,
+        args.valid_datadir,
+        args.train_batch_size,
         args.valid_batch_size,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
@@ -157,7 +157,7 @@ if __name__ == "__main__":
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
-        'callbacks': callbacks,
+        # 'callbacks': callbacks,
         # 'logger': loggers,
         'strategy': DeepSpeedStrategy(config=args.ds_config) \
             if args.use_deepspeed else DDPStrategy(find_unused_parameters=False),

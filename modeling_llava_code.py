@@ -215,7 +215,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         row_ids = torch.arange(max_num).expand(len(nums_structure_tokens), max_num).to(nums_structure_tokens.device)
         mask = row_ids < nums_structure_tokens.unsqueeze(1)
         flat_mask = mask.flatten()
-
         _, ast_embedding = self.structure_model(structure_values.reshape(-1, 512))
         # taking only those features that correspond to code_structure tokens
         # others fully consist of padding
@@ -244,6 +243,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         r"""
         
         """
+        # checking if cache is already in use (use_cache=True and iter > 1)
+        using_cache = isinstance(past_key_values, list)
+        
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -256,11 +258,13 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids) # from language model only
 
-        if structure_values is not None:
+        structure_features = None
+        if structure_values is not None and not using_cache:
             structure_features = self.get_structure_features(structure_values, num_structure_tokens)
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
-            assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), 'ooops'
+            assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), \
+                f'Mask does not correspond to the number of structure features: {inputs_embeds[special_structure_mask].numel()} != {structure_features.numel()}'
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
 
@@ -269,7 +273,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             attention_mask=attention_mask,
             # token_type_ids: Optional[torch.Tensor] = None,
             position_ids=position_ids,
-            past_key_values=past_key_values if isinstance(past_key_values, list) else None, # gpt-related kostyl
+            past_key_values=past_key_values if using_cache else None,  # gpt-related kostyl
             # head_mask: Optional[torch.Tensor] = None,
             inputs_embeds=inputs_embeds,
             # encoder_hidden_states: Optional[torch.Tensor] = None,
@@ -286,7 +290,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            structure_hidden_states=structure_features if structure_values is not None else None,
+            structure_hidden_states=structure_features,
         )
 
 
