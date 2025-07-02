@@ -19,36 +19,36 @@ from eval_metric_cceval import compute_metric_stmt_cceval
 device = torch.device("cuda:0")
 
 
-def prepare_prompt(tokenizer, 
-                   ast_tokenizer, 
-                   task, 
-                   left_cxt, 
-                   right_cxt=None, 
-                   max_ast_length=512, 
+def prepare_prompt(tokenizer,
+                   ast_tokenizer,
+                   task,
+                   left_cxt,
+                   right_cxt=None,
+                   max_ast_length=512,
                    use_code_structure=False):
     if use_code_structure:
         ast_tokens = AST(left_cxt, 'python', ast_tokenizer)
-        patch_length = max_ast_length - 4 # 4 special tokens for unixcoder
+        patch_length = max_ast_length - 4  # 4 special tokens for unixcoder
         num_structure_tokens = math.ceil(len(ast_tokens) / patch_length)
-        
+
         ast_ids = []
         for i in range(num_structure_tokens):
-            patch = ast_tokens[i * patch_length : (i + 1) * patch_length]
+            patch = ast_tokens[i * patch_length: (i + 1) * patch_length]
             patch_tokens = [ast_tokenizer.cls_token, "<encoder-only>", ast_tokenizer.sep_token] + patch + [ast_tokenizer.sep_token]
             patch_ids = ast_tokenizer.convert_tokens_to_ids(patch_tokens)
             ast_ids.extend(patch_ids)
         ast_ids = torch.tensor(ast_ids, dtype=torch.long)
         ast_length = len(ast_ids)
         ast_ids = F.pad(ast_ids, (0, max_ast_length * num_structure_tokens - ast_length), value=ast_tokenizer.pad_token_id)
-        
+
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_structure_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
         prompt = f'<fim_prefix>{left_cxt_truncated}' + '<CODE_STRUCTURE>' * num_structure_tokens + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
 
         return prompt, ast_ids, torch.tensor([num_structure_tokens])
-        
+
     else:
-        
+
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
         prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
@@ -77,7 +77,7 @@ def build_dataset(args, code_tokenizer, ast_tokenizer):
 
 
 if __name__ == "__main__":
-    
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--language", type=str, required=True, help="language name")
@@ -111,9 +111,9 @@ if __name__ == "__main__":
     )
 
     parser.add_argument('--config', type=str, help='path to args config')
-    
+
     args = parser.parse_args()
-    
+
     print('Input args:', args)
 
     code_tokenizer = AutoTokenizer.from_pretrained('bigcode/starcoderbase-1b', use_fast=False)
@@ -125,22 +125,22 @@ if __name__ == "__main__":
     ast_tokenizer.add_tokens(["<mask0>"], special_tokens=True)
 
     data = build_dataset(args, code_tokenizer, ast_tokenizer)
-    
+
     structure_config = RobertaConfig.from_pretrained("microsoft/unixcoder-base")
     structure_config.model_id = "microsoft/unixcoder-base"
     text_config = AutoConfig.from_pretrained('bigcode/starcoderbase-1b')
     text_config.model_id = 'bigcode/starcoderbase-1b'
-    text_config.vocab_size = text_config.vocab_size + 1 # for a new <CODE_STRUCTURE>
+    text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=49152)
-    
+
     if args.model_checkpoint:
         model = LlavaCodeForConditionalGeneration \
             .load_from_checkpoint(args.model_checkpoint, config=configuration).to(device)
     else:
         model = LlavaCodeForConditionalGeneration(configuration).to(device)
-    
+
     all_preds = []
     for entry in tqdm(data):
 
@@ -149,19 +149,22 @@ if __name__ == "__main__":
             inputs = code_tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
             cut_at = inputs.input_ids.shape[1]
             if args.use_code_structure:
-                
-                ast_ids = entry['ast_ids'].to(device)
+
+                structure_ids = entry['structure_ids'].to(device)
                 num_structure_tokens = entry['num_structure_tokens'].to(device)
                 cur_pred = model.generate(**inputs,
                                           use_cache=True,
-                                          structure_values=ast_ids,
+                                          temperature=0.0,
+                                          structure_values=structure_ids,
                                           num_structure_tokens=num_structure_tokens,
                                           max_new_tokens=args.gen_length,
                                           bad_words_ids=[[configuration.structure_token_id]])
-            
+
             else:
-                
+
                 cur_pred = model.generate(**inputs,
+                                          use_cache=True,
+                                          temperature=0.0,
                                           max_new_tokens=args.gen_length,
                                           bad_words_ids=[[configuration.structure_token_id]])
 
@@ -174,11 +177,11 @@ if __name__ == "__main__":
                 "task_id": entry["metadata"]["task_id"],
                 "pred": prediction,
             })
-            
+
     with open(f"{args.output_dir}/prediction.jsonl", "w", encoding="utf-8") as f_pred:
         for entry in all_preds:
             f_pred.write(json.dumps(entry) + "\n")
-            
+
     if args.compute_cceval_metric:
         compute_metric_stmt_cceval(args)
     else:

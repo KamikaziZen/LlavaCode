@@ -10,24 +10,22 @@ CUDA_VISIBLE_DEVICES=0,1 python train.py \
     --pad_token_id 0 \
     --dropout_p 0. \
     --default_root_dir ./ \
-    --data_prefix repoformer \
+    --data_prefix ast_cfc \
     --train_datadir /home/jovyan/sukhorukov/codegen/data_python/prepared_data/processed/train \
     --valid_datadir /home/jovyan/sukhorukov/codegen/data_python/prepared_data/processed/valid \
     --log_dir ./logs/ \
     --seed 1234 \
-    --lr 2e-5 \
+    --lr 2e-3 \
     --lr_scheduler_type cosine \
     --weight_decay 0. \
     --gradient_clip_val 1.0 \
     --max_steps -1 \
-    --max_epochs 1 \
-    --warmup_steps 100 \
+    --max_epochs 10 \
+    --warmup_steps 500 \
     --train_batch_size 16 \
     --valid_batch_size 16 \
     --accumulate_grad_batches 4 \
-    --training_stage 2 \
-    --resume_from_checkpoint \
-    --checkpoint_path 'lightning_logs/version_9/checkpoints/epoch=4-step=3776.ckpt' \
+    --training_stage 1 \
     --log_every_n_steps 20 \
     --save_step_frequency 500 \
     --val_check_interval 100 \

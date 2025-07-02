@@ -215,12 +215,12 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         row_ids = torch.arange(max_num).expand(len(nums_structure_tokens), max_num).to(nums_structure_tokens.device)
         mask = row_ids < nums_structure_tokens.unsqueeze(1)
         flat_mask = mask.flatten()
-        _, ast_embedding = self.structure_model(structure_values.reshape(-1, 512))
+        _, structure_embedding = self.structure_model(structure_values.reshape(-1, 512))
         # taking only those features that correspond to code_structure tokens
         # others fully consist of padding
-        ast_embedding = ast_embedding[flat_mask]
+        structure_embedding = structure_embedding[flat_mask]
 
-        structure_features = self.multi_modal_projector(ast_embedding)
+        structure_features = self.multi_modal_projector(structure_embedding)
         return structure_features
 
     @can_return_tuple
@@ -523,12 +523,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         return inp_tensor, lbl_tensor, attention_mask
 
     def training_step(self, batch, batch_idx):
-        token_ids, ast_ids, num_structure_tokens = batch['input_ids'], batch['ast_ids'], batch['num_structure_tokens']
+        token_ids, structure_ids, num_structure_tokens = batch['input_ids'], batch['structure_ids'], batch['num_structure_tokens']
         input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
         # first forward pass
         logits = self(input_ids=input_ids,
                       attention_mask=attention_mask,
-                      structure_values=ast_ids,
+                      structure_values=structure_ids,
                       num_structure_tokens=num_structure_tokens).logits
 
         loss = self.mle_loss(logits.view(-1, self.vocab_size), labels.view(-1))
@@ -537,11 +537,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
     def validation_step(self, batch, batch_idx):
         eval_fct = torch.nn.CrossEntropyLoss()
-        token_ids, ast_ids, num_structure_tokens = batch['input_ids'], batch['ast_ids'], batch['num_structure_tokens']
+        token_ids, structure_ids, num_structure_tokens = batch['input_ids'], batch['structure_ids'], batch['num_structure_tokens']
         input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
         logits = self(input_ids=input_ids,
                       attention_mask=attention_mask,
-                      structure_values=ast_ids,
+                      structure_values=structure_ids,
                       num_structure_tokens=num_structure_tokens).logits
         loss = eval_fct(logits.view(-1, self.vocab_size), labels.view(-1))
         self.validation_step_outputs.append(loss)

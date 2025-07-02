@@ -36,8 +36,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--debug_cuda_mem", action="store_true", help="Print GPU util")
     parser.add_argument("--precision", type=str, default='16-mixed', help="training precision")
     parser.add_argument("--ds_config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepspeed', 'stage2.json'), help="deepspeed config")
-    parser.add_argument("--resume_from_checkpoint", action='store_true')
-    parser.add_argument("--checkpoint_path", type=str, help='if args.resume_from_checkpoint is True, load model from the args.checkpoint_path')
+    parser.add_argument("--checkpoint_path", type=str, help='Load model from the args.checkpoint_path')
     return parent_parser
 
     
