@@ -1,4 +1,3 @@
-
 import argparse
 import os
 import torch
@@ -6,7 +5,7 @@ import torch
 
 def add_program_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_prefix", type=str, help="can use the training data name as experment name", default='')
+    parser.add_argument("--data_prefix", type=str, help="Determines data preprocessing")
     parser.add_argument("--train_datadir", type=str, help="path to the processed [PyPI + BigQuery] or [Wikitext_103] .arrow dataset")
     parser.add_argument("--valid_datadir", type=str, help="path to the processed [PyPI + BigQuery] or [Wikitext_103] .arrow dataset")
     parser.add_argument("--log_dir", type=str, default="../results/", help="Path of the Tensorboard log directory")
@@ -17,7 +16,7 @@ def add_program_args():
     parser.add_argument("--training_stage", type=int, default=1, help='Stage 1: only projection is trained. Stage 2: llm and projection are trained.')
     return parser
 
-    
+
 def add_pl_args(parent_parser):
     parser = parent_parser.add_argument_group("pl.Trainer")
     parser.add_argument("--val_check_interval", type=int, 
@@ -39,7 +38,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--checkpoint_path", type=str, help='Load model from the args.checkpoint_path')
     return parent_parser
 
-    
+
 def add_model_args(parent_parser):
     parser = parent_parser.add_argument_group("LitCodeGen")
     # CodeGen specific arguments

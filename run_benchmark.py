@@ -19,41 +19,78 @@ from eval_metric_cceval import compute_metric_stmt_cceval
 device = torch.device("cuda:0")
 
 
+def tokenize_patches(tokens, patch_length, tokenizer):
+
+    num_injection_tokens = math.ceil(len(tokens) / patch_length)
+
+    tokens_ids = []
+    for i in range(num_injection_tokens):
+        patch = tokens[i * patch_length: (i + 1) * patch_length]
+        patch_tokens = [tokenizer.cls_token, "<encoder-only>", tokenizer.sep_token] \
+            + patch + [tokenizer.sep_token]
+        patch_ids = tokenizer.convert_tokens_to_ids(patch_tokens)
+        tokens_ids.extend(patch_ids)
+    tokens_ids = torch.tensor(tokens_ids, dtype=torch.long)
+
+    return tokens_ids, num_injection_tokens
+
+
 def prepare_prompt(tokenizer,
-                   ast_tokenizer,
-                   task,
+                   structure_tokenizer,
                    left_cxt,
                    right_cxt=None,
-                   max_ast_length=512,
-                   use_code_structure=False):
-    if use_code_structure:
-        ast_tokens = AST(left_cxt, 'python', ast_tokenizer)
-        patch_length = max_ast_length - 4  # 4 special tokens for unixcoder
-        num_structure_tokens = math.ceil(len(ast_tokens) / patch_length)
+                   crossfile_cxt=None):
 
-        ast_ids = []
-        for i in range(num_structure_tokens):
-            patch = ast_tokens[i * patch_length: (i + 1) * patch_length]
-            patch_tokens = [ast_tokenizer.cls_token, "<encoder-only>", ast_tokenizer.sep_token] + patch + [ast_tokenizer.sep_token]
-            patch_ids = ast_tokenizer.convert_tokens_to_ids(patch_tokens)
-            ast_ids.extend(patch_ids)
-        ast_ids = torch.tensor(ast_ids, dtype=torch.long)
-        ast_length = len(ast_ids)
-        ast_ids = F.pad(ast_ids, (0, max_ast_length * num_structure_tokens - ast_length), value=ast_tokenizer.pad_token_id)
+    if args.data_prefix == 'code_cfc':
 
-        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_structure_tokens - args.right_context_length):])
+        structure_tokens = structure_tokenizer.tokenize(crossfile_cxt)
+        patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
+        structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
+        structure_ids = F.pad(structure_ids,
+                              (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
+                              value=structure_tokenizer.pad_token_id)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f'<fim_prefix>{left_cxt_truncated}' + '<CODE_STRUCTURE>' * num_structure_tokens + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
+        prompt = '<CODE_STRUCTURE>' * num_injection_tokens + f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
 
-        return prompt, ast_ids, torch.tensor([num_structure_tokens])
+        return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
-    else:
+    elif args.data_prefix == 'ast_cfc':
+
+        # AST function ignores comments
+        structure_tokens = AST(crossfile_cxt.replace('#', ''), 'python', structure_tokenizer)
+        patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
+        structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
+        structure_ids = F.pad(structure_ids,
+                              (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
+                              value=structure_tokenizer.pad_token_id)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+        prompt = '<CODE_STRUCTURE>' * num_injection_tokens + f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
+
+        return prompt, structure_ids, torch.tensor([num_injection_tokens])
+
+    elif args.data_prefix == 'default':
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
         prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
 
         return prompt, None, None
+
+    elif args.data_prefix == 'default_cfc':
+
+        assert crossfile_cxt is not None
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length - args.cfc_seq_length):])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+        crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode('\n\n' + crossfile_cxt)[:args.cfc_seq_length])
+        prompt = f'<fim_prefix>{left_cxt_truncated}<fim_suffix>{right_cxt_truncated}{crossfile_cxt_truncated}<fim_middle>'
+
+    else:
+
+        raise ValueError(f'Unrecognized data_prefix: {args.data_prefix}')
 
 
 def build_dataset(args, code_tokenizer, ast_tokenizer):
@@ -62,14 +99,16 @@ def build_dataset(args, code_tokenizer, ast_tokenizer):
 
     data = []
     for entry in raw_data:
-        task = args.task
 
         left_cxt = entry["prompt"]
         right_cxt = entry["right_context"]
-        entry['llm_prompt'], entry['ast_ids'], entry['num_structure_tokens'] = \
-            prepare_prompt(code_tokenizer, ast_tokenizer, task, 
-                           left_cxt, right_cxt, args.max_ast_length,
-                           args.use_code_structure)
+        crossfile_cxt = None
+        if 'crossfile_context' in entry:
+            crossfile_cxt = entry["crossfile_context"] if type(entry["crossfile_context"]) == str else entry["crossfile_context"]['text']
+
+        entry['llm_prompt'], entry['structure_ids'], entry['num_structure_tokens'] = \
+            prepare_prompt(code_tokenizer, ast_tokenizer,
+                           left_cxt, right_cxt, crossfile_cxt)
 
         data.append(entry)
 
@@ -86,7 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--prompt_file", type=str, default=None, help="file with a list of prompts")
     parser.add_argument("--gen_length", type=int, default=50, help="max length of generated token sequence")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="max length of prompt")
-    parser.add_argument("--max_ast_length", type=int, default=512, help="max length of ast sequence")
+    parser.add_argument("--max_structure_length", type=int, default=512, help="max length of structure sequence")
     parser.add_argument(
         "--right_context_length",
         type=int,
@@ -101,7 +140,7 @@ if __name__ == "__main__":
     # for cceval metric
     parser.add_argument("--compute_cceval_metric", type=lambda x:bool(int(x)), help="use cceval metric")
 
-    parser.add_argument("--use_code_structure", action="store_true")
+    parser.add_argument("--data_prefix", type=str, help="Determines data preprocessing")
 
     parser.add_argument(
         "--task",
@@ -148,13 +187,13 @@ if __name__ == "__main__":
         with torch.no_grad():
             inputs = code_tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
             cut_at = inputs.input_ids.shape[1]
-            if args.use_code_structure:
+            if args.data_prefix not in ['default', 'default_cfc']:
 
                 structure_ids = entry['structure_ids'].to(device)
                 num_structure_tokens = entry['num_structure_tokens'].to(device)
                 cur_pred = model.generate(**inputs,
                                           use_cache=True,
-                                          temperature=0.0,
+                                          do_sample=False,
                                           structure_values=structure_ids,
                                           num_structure_tokens=num_structure_tokens,
                                           max_new_tokens=args.gen_length,
@@ -164,7 +203,7 @@ if __name__ == "__main__":
 
                 cur_pred = model.generate(**inputs,
                                           use_cache=True,
-                                          temperature=0.0,
+                                          do_sample=False,
                                           max_new_tokens=args.gen_length,
                                           bad_words_ids=[[configuration.structure_token_id]])
 
