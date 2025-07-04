@@ -1,12 +1,7 @@
 from transformers import (
     PreTrainedModel,
-    LlamaConfig,
-    CLIPVisionConfig,
     AutoModel,
-    AutoModelForCausalLM,
     AutoConfig,
-    AutoProcessor,
-    AutoTokenizer,
     PretrainedConfig,
     GenerationMixin,
     CONFIG_MAPPING
@@ -23,7 +18,7 @@ from transformers.optimization import (
     get_cosine_schedule_with_warmup
 )
 
-from pytorch_lightning import LightningModule
+from lightning.pytorch import LightningModule
 
 import torch
 import torch.nn as nn

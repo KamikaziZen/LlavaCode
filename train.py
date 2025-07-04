@@ -1,34 +1,22 @@
 from transformers import (
-    AutoModel,
-    AutoModelForCausalLM,
     AutoConfig,
-    AutoProcessor,
     AutoTokenizer,
     RobertaConfig,
 )
 
-import torch
-import torch.nn as nn
-import pytorch_lightning as pl
-from pytorch_lightning import seed_everything
-from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+import lightning.pytorch as pl
+from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.loggers import CSVLogger
 
 from huggingface_hub import login
 from dotenv import load_dotenv
 import logging
-from clearml import Task, Logger
-
-from parser import (remove_comments_and_docstrings,
-                   tree_to_token_index,
-                   index_to_code_token,
-                   tree_to_variable_index)
-from tree_sitter import Language, Parser
-from preprocess import AST
 
 from modeling_llava_code import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
 from pl_data import DataModule
+from pl_logger import ClearMLLogger
 
 load_dotenv()
 import os
@@ -85,7 +73,7 @@ if __name__ == "__main__":
     parser = add_model_args(parser)
     parser = add_pl_args(parser)
     args = parser.parse_args()
-    seed_everything(args.seed, workers=True)
+    pl.seed_everything(args.seed, workers=True)
 
     # User gives batch size over all GPUs, PL requires per GPU
     args.train_batch_size = args.train_batch_size // (args.devices * args.num_nodes)
@@ -108,8 +96,9 @@ if __name__ == "__main__":
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=49152)
 
-    if args.resume_from_checkpoint:
-        model = LlavaCodeForConditionalGeneration.load_from_checkpoint(args.checkpoint_path, config=configuration)
+    if args.model_checkpoint is not None:
+        model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
+            args.model_checkpoint, config=configuration)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
 
@@ -127,8 +116,10 @@ if __name__ == "__main__":
     for name, param in model.named_parameters():
         all_params += param.numel()
         trainable_params += param.numel() * param.requires_grad
-    
-    logger.info(f'Trainable parameters: {trainable_params}, All Parameters: {all_params}, Percentage: {trainable_params / all_params * 100 :.2f}%')
+
+    logger.info(f"""Trainable parameters: {trainable_params},
+                All Parameters: {all_params},
+                Percentage: {trainable_params / all_params * 100 :.2f}%""")
 
     data = DataModule(
         args.data_prefix,
@@ -146,34 +137,38 @@ if __name__ == "__main__":
 
     callbacks = []
     callbacks = [LearningRateMonitor(logging_interval='step')]
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=1,
-        monitor="Valid/Loss/MLE",
-        mode="min",
-        every_n_train_steps=args.save_step_frequency
-    )
-    callbacks.append(checkpoint_callback)
-    callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
+    # checkpoint_callback = ModelCheckpoint(
+    #     save_top_k=1,
+    #     monitor="Valid/Loss/MLE",
+    #     mode="min",
+    #     every_n_train_steps=args.save_step_frequency
+    # )
+    # callbacks.append(checkpoint_callback)
+    # callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
+
+    clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=['unixcoder', 'starcoder-1b'])
+    csv_logger = CSVLogger("lightning_logs/", name=args.exp_name)
+    # clearml_logger.create_task(project_name='LlavaCode', task_name='projection_ast_cfc', tags=['unixcoder', 'starcoder-1b'])
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
-        # 'callbacks': callbacks,
-        # 'logger': loggers,
+        'callbacks': callbacks,
+        'logger': [clearml_logger, csv_logger],
         'strategy': DeepSpeedStrategy(config=args.ds_config) \
             if args.use_deepspeed else DDPStrategy(find_unused_parameters=False),
         'num_nodes': args.num_nodes,
         # 'plugins': plugins,
         'precision': args.precision,
-        'accelerator':args.accelerator,
-        'devices':args.devices,
-        'max_epochs':args.max_epochs,
-        'max_steps':args.max_steps,
-        'val_check_interval':args.val_check_interval,
-        'log_every_n_steps':args.log_every_n_steps,
-        'accumulate_grad_batches':args.accumulate_grad_batches,
-        'gradient_clip_val':args.gradient_clip_val,
+        'accelerator': args.accelerator,
+        'devices': args.devices,
+        'max_epochs': args.max_epochs,
+        'max_steps': args.max_steps,
+        'val_check_interval': args.val_check_interval,
+        'log_every_n_steps': args.log_every_n_steps,
+        'accumulate_grad_batches': args.accumulate_grad_batches,
+        'gradient_clip_val': args.gradient_clip_val,
         'gradient_clip_algorithm': 'norm',
-        'default_root_dir':args.default_root_dir,
+        'default_root_dir': args.default_root_dir,
     }
     trainer = pl.Trainer(**custom_trainer_kwargs)
     logger.warning(f'{trainer.__dict__=}')

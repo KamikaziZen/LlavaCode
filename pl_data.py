@@ -1,7 +1,7 @@
 import logging
 import time
 
-import pytorch_lightning as pl
+from lightning.pytorch import LightningDataModule
 from datasets import load_from_disk
 import torch
 import torch.nn.functional as F
@@ -167,11 +167,11 @@ class ASTCfcDataset(Dataset):
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
         input_ids = torch.cat([
-            torch.tensor([self.structure_token_id] * num_structure_tokens),
             fim_prefix,
             left_context_ids,
             fim_suffix,
             right_context_ids,
+            torch.tensor([self.structure_token_id] * num_structure_tokens),
             fim_middle,
             target_ids]).to(torch.long)
 
@@ -212,7 +212,7 @@ class LlavaCodeDataCollator:
         return batch
 
 
-class DataModule(pl.LightningDataModule):
+class DataModule(LightningDataModule):
     def __init__(self, data_prefix, train_datadir, valid_datadir, train_batch_size,
                  valid_batch_size, structure_token_id, code_tokenizer,
                  ast_tokenizer, num_workers=0,):

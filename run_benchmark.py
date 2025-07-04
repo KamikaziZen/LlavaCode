@@ -88,6 +88,8 @@ def prepare_prompt(tokenizer,
         crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode('\n\n' + crossfile_cxt)[:args.cfc_seq_length])
         prompt = f'<fim_prefix>{left_cxt_truncated}<fim_suffix>{right_cxt_truncated}{crossfile_cxt_truncated}<fim_middle>'
 
+        return prompt, None, None
+
     else:
 
         raise ValueError(f'Unrecognized data_prefix: {args.data_prefix}')
@@ -121,34 +123,24 @@ if __name__ == "__main__":
 
     parser.add_argument("--language", type=str, required=True, help="language name")
     parser.add_argument("--model_checkpoint", type=str)
-
+    parser.add_argument("--task", type=str, choices=["line_completion", "api_completion", "function_completion"])
     parser.add_argument("--prompt_file", type=str, default=None, help="file with a list of prompts")
     parser.add_argument("--gen_length", type=int, default=50, help="max length of generated token sequence")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="max length of prompt")
     parser.add_argument("--max_structure_length", type=int, default=512, help="max length of structure sequence")
-    parser.add_argument(
-        "--right_context_length",
-        type=int,
-        default=512,
-        help="For model_type=codelm_leftright_context: Text sequence length corresponding to the right context"
-    )
+    parser.add_argument("--right_context_length",
+                        type=int,
+                        default=512,
+                        help="For model_type=codelm_leftright_context: Text sequence length corresponding to the right context")
+    parser.add_argument("--cfc_seq_length",
+                        type=int,
+                        default=512,
+                        help="For model_type=codelm_cfc: Text sequence length corresponding to the retrieved nodes")
     parser.add_argument("--output_dir", type=str, default="output_dir", help="output directory to save predictions")
     parser.add_argument("--num_return_sequences", type=int, default=1, help="The number of samples to generate.")
-
-    # only compute metric
     parser.add_argument("--only_compute_metric", action="store_true", help="only compute metric")
-    # for cceval metric
     parser.add_argument("--compute_cceval_metric", type=lambda x:bool(int(x)), help="use cceval metric")
-
     parser.add_argument("--data_prefix", type=str, help="Determines data preprocessing")
-
-    parser.add_argument(
-        "--task",
-        choices=["line_completion", "api_completion", "function_completion"],
-        default="line_completion",
-        help="task name"
-    )
-
     parser.add_argument('--config', type=str, help='path to args config')
 
     args = parser.parse_args()

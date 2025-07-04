@@ -14,6 +14,7 @@ def add_program_args():
     parser.add_argument("--track_steps", action="store_true", help="if True, progress bar will track training batches, else will track epochs")
     parser.add_argument("--save_step_frequency", default=1000, help="Number of steps (update steps) between saving checkpoints", type=int)
     parser.add_argument("--training_stage", type=int, default=1, help='Stage 1: only projection is trained. Stage 2: llm and projection are trained.')
+    parser.add_argument("--exp_name", type=str, help="Name of the experiment. Required for logging.")
     return parser
 
 
@@ -35,7 +36,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--debug_cuda_mem", action="store_true", help="Print GPU util")
     parser.add_argument("--precision", type=str, default='16-mixed', help="training precision")
     parser.add_argument("--ds_config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepspeed', 'stage2.json'), help="deepspeed config")
-    parser.add_argument("--checkpoint_path", type=str, help='Load model from the args.checkpoint_path')
+    parser.add_argument("--model_checkpoint", type=str, help='Path to the checkpoint to load')
     return parent_parser
 
 
