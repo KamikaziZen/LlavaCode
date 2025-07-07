@@ -20,7 +20,7 @@ def add_program_args():
 
 def add_pl_args(parent_parser):
     parser = parent_parser.add_argument_group("pl.Trainer")
-    parser.add_argument("--val_check_interval", type=int, 
+    parser.add_argument("--val_check_interval", type=int,
         help="Validation frequency (specify interval in # of training steps, not batches)", default=1000)
     parser.add_argument("--devices", type=int, help="Number of gpu/cpu cores to use", default=8)
     parser.add_argument("--num_nodes", type=int, default=1)

@@ -13,7 +13,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from transformers.activations import ACT2FN
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.optimization import (
-    get_linear_schedule_with_warmup, 
+    get_linear_schedule_with_warmup,
     get_inverse_sqrt_schedule,
     get_cosine_schedule_with_warmup
 )
@@ -28,7 +28,8 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
-from unixcoder import UniXcoder
+from .unixcoder import UniXcoder
+from .modeling_gnn_encoder import EnhancedGNNEncoder
 
 
 class LlavaCodeConfig(PretrainedConfig):
@@ -158,6 +159,7 @@ class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
 
     structure_hidden_states: Optional[torch.FloatTensor] = None
 
+
 class LlavaCodePreTrainedModel(PreTrainedModel):
     config_class = LlavaCodeConfig
     base_model_prefix = ""
@@ -182,12 +184,21 @@ class LlavaCodePreTrainedModel(PreTrainedModel):
         elif isinstance(module, LlavaCodeModel):
             embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
 
+
 class LlavaCodeModel(LlavaCodePreTrainedModel):
     _checkpoint_conversion_mapping = {"language_model.model": "language_model"}
 
     def __init__(self, config: LlavaCodeConfig):
         super().__init__(config)
-        self.structure_model = UniXcoder(self.config.structure_config.model_id)
+        if 'unixcoder' in self.config.structure_config.model_id.lower():
+            self.structure_model = UniXcoder(self.config.structure_config.model_id)
+        elif 'gnncoder' in self.config.structure_config.model_id.lower():
+            # TODO: load weights into existing model?
+            # self.structure_model = EnhancedGNNEncoder(
+            #     hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
+            self.structure_model = torch.load(self.config.structure_config.model_id, weights_only=False)
+        else:
+            raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
         self.multi_modal_projector = LlavaCodeMultiModalProjector(config)
         embed_std = 1 / math.sqrt(config.text_config.hidden_size)
@@ -236,11 +247,11 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         **kwargs: Unpack[LossKwargs]
     ) -> Union[Tuple, LlavaCodeModelOutputWithPast]:
         r"""
-        
+
         """
         # checking if cache is already in use (use_cache=True and iter > 1)
         using_cache = isinstance(past_key_values, list)
-        
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states

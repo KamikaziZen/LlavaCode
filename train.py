@@ -1,3 +1,5 @@
+import os
+
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -13,13 +15,12 @@ from huggingface_hub import login
 from dotenv import load_dotenv
 import logging
 
-from modeling_llava_code import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
+from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
 from pl_data import DataModule
 from pl_logger import ClearMLLogger
 
 load_dotenv()
-import os
 token = os.getenv("HF_TOKEN")
 login(token=token)
 
@@ -147,7 +148,7 @@ if __name__ == "__main__":
     # callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
 
     clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=['unixcoder', 'starcoder-1b'])
-    csv_logger = CSVLogger("lightning_logs/", name=args.exp_name)
+    csv_logger = CSVLogger("lightning_logs/", name=args.exp_name, version="")
     # clearml_logger.create_task(project_name='LlavaCode', task_name='projection_ast_cfc', tags=['unixcoder', 'starcoder-1b'])
 
     logger.info('Initializing PL Trainer...')
