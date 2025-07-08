@@ -192,11 +192,10 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         super().__init__(config)
         if 'unixcoder' in self.config.structure_config.model_id.lower():
             self.structure_model = UniXcoder(self.config.structure_config.model_id)
-        elif 'gnncoder' in self.config.structure_config.model_id.lower():
-            # TODO: load weights into existing model?
-            # self.structure_model = EnhancedGNNEncoder(
-            #     hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
-            self.structure_model = torch.load(self.config.structure_config.model_id, weights_only=False)
+        elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
+            self.structure_model = EnhancedGNNEncoder(
+                hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
+            self.structure_model.load_state_dict(torch.load(self.config.structure_config.model_id))
         else:
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
