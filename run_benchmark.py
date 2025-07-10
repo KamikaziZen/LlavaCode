@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import math
 from tqdm import tqdm
 
-from modeling_llava_code import LlavaCodeConfig, LlavaCodeForConditionalGeneration
+from models import LlavaCodeConfig, LlavaCodeForConditionalGeneration
 from eval_metric import compute_metric_stmt
 from eval_metric_cceval import compute_metric_stmt_cceval
 
@@ -41,25 +41,121 @@ def prepare_prompt(tokenizer,
                    right_cxt=None,
                    crossfile_cxt=None):
 
-    if args.data_prefix == 'code_cfc':
+    # if args.data_prefix == 'code_cfc':
+    #     """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
+    #     """
+    #     structure_tokens = structure_tokenizer.tokenize(crossfile_cxt)
+    #     patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
+    #     structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
+    #     structure_ids = F.pad(structure_ids,
+    #                           (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
+    #                           value=structure_tokenizer.pad_token_id)
 
-        structure_tokens = structure_tokenizer.tokenize(crossfile_cxt)
-        patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
-        structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
-        structure_ids = F.pad(structure_ids,
-                              (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
-                              value=structure_tokenizer.pad_token_id)
+    #     left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+    #     right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+    #     prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
+
+    #     return prompt, structure_ids, torch.tensor([num_injection_tokens])
+
+    if args.data_prefix == 'code_cfc':
+        """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
+        """
+        # splitting context into chunks
+        # one chunk for one file
+        lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
+        skip = False
+        current_lines = []
+        chunks = []
+        for line in lines:
+            if line.startswith('# the below code fragment can be found in:'):
+                skip = True
+                if current_lines:
+                    chunks.append('\n'.join(current_lines))
+                current_lines = []
+            elif skip:  # skipping the file path
+                skip = False
+            elif line:
+                current_lines.append(line.strip())
+        if current_lines:
+            chunks.append('\n'.join(current_lines))
+
+        num_injection_tokens = len(chunks)
+        structure_ids = []
+        for cfc in chunks:
+            code_tokens = structure_tokenizer.tokenize(crossfile_cxt)
+            code_tokens = code_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
+            chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
+                + code_tokens + [structure_tokenizer.sep_token]
+            chunk_ids = structure_tokenizer.convert_tokens_to_ids(chunk_tokens)
+            structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
+        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = '<CODE_STRUCTURE>' * num_injection_tokens + f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
+        prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
-    elif args.data_prefix == 'ast_cfc':
+    # elif args.data_prefix == 'ast_cfc':
+    # """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
+    # """
 
+    #     # AST function ignores comments
+    #     structure_tokens = AST(crossfile_cxt.replace('#', ''), 'python', structure_tokenizer)
+    #     patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
+    #     structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
+    #     structure_ids = F.pad(structure_ids,
+    #                           (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
+    #                           value=structure_tokenizer.pad_token_id)
+
+    #     left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+    #     right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+    #     prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
+
+    elif args.data_prefix == 'ast_cfc':
+        """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
+        """
+        # splitting context into chunks
+        # one chunk for one file
+        lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
+        skip = False
+        current_lines = []
+        chunks = []
+        for line in lines:
+            if line.startswith('# the below code fragment can be found in:'):
+                skip = True
+                if current_lines:
+                    chunks.append('\n'.join(current_lines))
+                current_lines = []
+            elif skip:  # skipping the file path
+                skip = False
+            elif line:
+                current_lines.append(line.strip())
+        if current_lines:
+            chunks.append('\n'.join(current_lines))
+
+        num_injection_tokens = len(chunks)
+        structure_ids = []
+        for cfc in chunks:
+            ast_tokens = AST(cfc.replace('#', ''), 'python', structure_tokenizer)  # decommenting
+            ast_tokens = ast_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
+            chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
+                + ast_tokens + [structure_tokenizer.sep_token]
+            chunk_ids = structure_tokenizer.convert_tokens_to_ids(chunk_tokens)
+            structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
+        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+        prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
+
+        return prompt, structure_ids, torch.tensor([num_injection_tokens])
+
+    elif args.data_prefix == 'codeast_cfc':
+
+        structure_tokens = structure_tokenizer.tokenize(crossfile_cxt)
         # AST function ignores comments
-        structure_tokens = AST(crossfile_cxt.replace('#', ''), 'python', structure_tokenizer)
+        structure_tokens += AST(crossfile_cxt.replace('#', ''), 'python', structure_tokenizer)
         patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
         structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
         structure_ids = F.pad(structure_ids,
@@ -68,7 +164,7 @@ def prepare_prompt(tokenizer,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = '<CODE_STRUCTURE>' * num_injection_tokens + f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
+        prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
