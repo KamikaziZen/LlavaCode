@@ -17,7 +17,7 @@ import logging
 
 from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
-from pl_data import DataModule
+from data import LlavaCodeDataModule
 from pl_logger import ClearMLLogger
 
 load_dotenv()
@@ -92,12 +92,13 @@ if __name__ == "__main__":
     structure_config.model_id = args.structure_model_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
-    text_config.vocab_size = text_config.vocab_size + 1 # for a new <CODE_STRUCTURE>
+    text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=49152)
 
     if args.model_checkpoint is not None:
+        logger.info(f"Loading checkpoint: {args.model_checkpoint}")
         model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
             args.model_checkpoint, config=configuration)
     else:
@@ -122,7 +123,7 @@ if __name__ == "__main__":
                 All Parameters: {all_params},
                 Percentage: {trainable_params / all_params * 100 :.2f}%""")
 
-    data = DataModule(
+    data = LlavaCodeDataModule(
         args.data_prefix,
         args.train_datadir,
         args.valid_datadir,

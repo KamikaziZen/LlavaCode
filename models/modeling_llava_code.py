@@ -28,7 +28,7 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
-from .unixcoder import UniXcoder
+from .modeling_unixcoder import UniXcoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 
 
