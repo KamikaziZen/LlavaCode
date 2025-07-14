@@ -113,7 +113,7 @@ def prepare_prompt(tokenizer,
     #     prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
 
     elif args.data_prefix == 'ast_cfc':
-        """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
+        """Dataset type: n chunks of cross-file context, m lines each, stored as an array
         """
         # splitting context into chunks
         # one chunk for one file
@@ -134,7 +134,13 @@ def prepare_prompt(tokenizer,
         if current_lines:
             chunks.append('\n'.join(current_lines))
 
-        num_injection_tokens = len(chunks)
+        # restrict number of injection tokens (RAG files)
+        if len(chunks) > args.num_structure_tokens:
+            num_injection_tokens = args.num_structure_tokens
+            chunks = chunks[:num_injection_tokens]
+        else:
+            num_injection_tokens = len(chunks)
+
         structure_ids = []
         for cfc in chunks:
             ast_tokens = AST(cfc.replace('#', ''), 'python', structure_tokenizer)  # decommenting
@@ -232,10 +238,11 @@ if __name__ == "__main__":
                         type=int,
                         default=512,
                         help="For model_type=codelm_cfc: Text sequence length corresponding to the retrieved nodes")
+    parser.add_argument("--num_structure_tokens", type=int, required=True, help='number of embeddings reserved for RAG injection')
     parser.add_argument("--output_dir", type=str, default="output_dir", help="output directory to save predictions")
     parser.add_argument("--num_return_sequences", type=int, default=1, help="The number of samples to generate.")
     parser.add_argument("--only_compute_metric", action="store_true", help="only compute metric")
-    parser.add_argument("--compute_cceval_metric", type=lambda x:bool(int(x)), help="use cceval metric")
+    parser.add_argument("--compute_cceval_metric", type=lambda x: bool(int(x)), help="use cceval metric")
     parser.add_argument("--data_prefix", type=str, help="Determines data preprocessing")
     parser.add_argument('--config', type=str, help='path to args config')
 

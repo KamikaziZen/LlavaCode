@@ -6,21 +6,22 @@ from lightning.pytorch import LightningDataModule
 import torch
 from torch.utils.data import DataLoader
 
-from unixcoder import (
+from .unixcoder import (
     AstLcontextDataset,
     AstCfcDataset,
     CodeCfcDataset,
     CodeAstCfcDataset,
 )
+from .graphcodebert import DfgDataset
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
 class LlavaCodeDataCollator:
-    def __init__(self, code_tokenizer, ast_tokenizer):
+    def __init__(self, code_tokenizer, structure_tokenizer):
         self.code_tokenizer = code_tokenizer
-        self.ast_tokenizer = ast_tokenizer
+        self.structure_tokenizer = structure_tokenizer
 
     def __call__(self, features):
         input_ids = [{'input_ids': f['input_ids']} for f in features]
@@ -33,7 +34,8 @@ class LlavaCodeDataCollator:
             padding_side='right'
         )
 
-        structure_batch = self.ast_tokenizer.pad(
+        # no need in case of fixed num_structure_tokens, but left for compatibility
+        structure_batch = self.structure_tokenizer.pad(
             structure_ids,
             padding=True,
             pad_to_multiple_of=512,
@@ -44,13 +46,22 @@ class LlavaCodeDataCollator:
         batch['structure_ids'] = structure_batch['input_ids']
         batch['num_structure_tokens'] = torch.tensor([f['num_structure_tokens'] for f in features], dtype=torch.int)
 
+        if 'structure_pos_idx' in features[0].keys():
+            batch['structure_pos_idx'] = torch.vstack([f['structure_pos_idx'] for f in features])  # assumed to be  already padded
+            for f in features:
+                assert len(f['structure_pos_idx']) == 5 * 512, f"len of structure_pos_idx: {len(f['structure_pos_idx'])}, shape: {f['structure_pos_idx'].shape}"
+        if 'structure_attn_mask' in features[0].keys():
+            batch['structure_attn_mask'] = [f['structure_attn_mask'] for f in features]  # assumed to be  already padded
+            # for f in features:
+            #     assert len(f['structure_attn_mask']) == 5 * 512, f"len of structure_attn_mask: {len(f['structure_attn_mask'])}, shape: {f['structure_attn_mask'].shape}"
+
         return batch
 
 
 class LlavaCodeDataModule(LightningDataModule):
     def __init__(self, data_prefix, train_datadir, valid_datadir, train_batch_size,
-                 valid_batch_size, code_tokenizer, ast_tokenizer, structure_token_id,
-                 num_workers=0,):
+                 valid_batch_size, code_tokenizer, structure_tokenizer, structure_token_id,
+                 num_structure_tokens=5, num_workers=0,):
         super(LlavaCodeDataModule, self).__init__()
         self.data_prefix = data_prefix
         self.train_datadir = train_datadir
@@ -59,10 +70,11 @@ class LlavaCodeDataModule(LightningDataModule):
         self.valid_batch_size = valid_batch_size
         self.num_workers = num_workers
         self.code_tokenizer = code_tokenizer
-        self.ast_tokenizer = ast_tokenizer
+        self.structure_tokenizer = structure_tokenizer
         self.structure_token_id = structure_token_id
+        self.num_structure_tokens = num_structure_tokens
 
-        self.data_collator = LlavaCodeDataCollator(code_tokenizer, ast_tokenizer)
+        self.data_collator = LlavaCodeDataCollator(code_tokenizer, structure_tokenizer)
 
         logger.info(f"Initializing DataModule w/ train_bs={self.train_batch_size}, "
                     f"valid_bs={self.valid_batch_size}")
@@ -72,30 +84,38 @@ class LlavaCodeDataModule(LightningDataModule):
             return AstLcontextDataset(
                 raw_data,
                 code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.ast_tokenizer,
+                ast_tokenizer=self.structure_tokenizer,
                 structure_token_id=self.structure_token_id,
                 max_structure_length=512)
         elif self.data_prefix == 'ast_cfc':
             return AstCfcDataset(
                 raw_data,
                 code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.ast_tokenizer,
+                ast_tokenizer=self.structure_tokenizer,
                 structure_token_id=self.structure_token_id,
-                num_structure_tokens=5,
+                num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
         elif self.data_prefix == 'code_cfc':
             return CodeCfcDataset(
                 raw_data,
                 code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.ast_tokenizer,
+                ast_tokenizer=self.structure_tokenizer,
                 structure_token_id=self.structure_token_id,
                 max_structure_length=512)
         elif self.data_prefix == 'codeast_cfc':
             return CodeAstCfcDataset(
                 raw_data,
                 code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.ast_tokenizer,
+                ast_tokenizer=self.structure_tokenizer,
                 structure_token_id=self.structure_token_id,
+                max_structure_length=512)
+        elif self.data_prefix == 'dfg_cfc':
+            return DfgDataset(
+                raw_data,
+                code_tokenizer=self.code_tokenizer,
+                dfg_tokenizer=self.structure_tokenizer,
+                structure_token_id=self.structure_token_id,
+                num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
         # elif self.data_prefix == 'graph_cfc':
         #     return GraphCfcDataset(

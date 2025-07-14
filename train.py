@@ -4,6 +4,7 @@ from transformers import (
     AutoConfig,
     AutoTokenizer,
     RobertaConfig,
+    RobertaTokenizer,
 )
 
 import lightning.pytorch as pl
@@ -17,7 +18,7 @@ import logging
 
 from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
-from data import LlavaCodeDataModule
+from datamodule import LlavaCodeDataModule
 from pl_logger import ClearMLLogger
 
 load_dotenv()
@@ -104,6 +105,11 @@ if __name__ == "__main__":
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
 
+    if 'unixcoder' in args.structure_model_id.lower():
+        structure_tokenizer = model.model.structure_model.tokenizer
+    elif 'graphcodebert' in args.structure_model_id.lower():
+        structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
+
     # Stage 1: only projection is trained
     # Stage 2: projection and llm are trained
     # structure model weights are always frozen
@@ -131,8 +137,9 @@ if __name__ == "__main__":
         args.valid_batch_size,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
-        ast_tokenizer=model.model.structure_model.tokenizer,
-        structure_token_id=49152
+        structure_tokenizer=structure_tokenizer,
+        structure_token_id=49152,
+        num_structure_tokens=args.num_structure_tokens,
     )
     data.setup()
     args.num_training_examples = len(data.train_dataloader())

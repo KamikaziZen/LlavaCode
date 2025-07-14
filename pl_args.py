@@ -45,6 +45,7 @@ def add_model_args(parent_parser):
     # CodeGen specific arguments
     parser.add_argument("--text_model_id", type=str, required=True)
     parser.add_argument("--structure_model_id", type=str, required=True)
+    parser.add_argument("--num_structure_tokens", type=int, default=5)
     parser.add_argument("--pad_token_id", type=int, default=50256)  # see here https://github.com/salesforce/CodeGen/blob/2ca076874ca2d26c2437df2968f6c43df92748bc/jaxformer/hf/sample.py#L201
     parser.add_argument("--dropout_layers", type=int, default=-1, help="Number of layers to add dropout to; if -1, dropout will be added to all layers; if 0, no dropout will be used")
     parser.add_argument("--dropout_p", type=float, default=0.1, help="Value of dropout probability to be added")
