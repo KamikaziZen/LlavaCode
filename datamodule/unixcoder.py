@@ -6,8 +6,10 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 import math
-
+import random
 from preprocess import AST
+
+from .utils import pack_fim_inputs
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -197,8 +199,10 @@ class AstCfcDataset_old(Dataset):
                  ast_tokenizer,
                  code_tokenizer,
                  structure_token_id,
+                 fim_tokens_ids,
                  max_seq_length=2048,
-                 max_structure_length=512):
+                 max_structure_length=512,
+                 **kwargs):
         super(AstCfcDataset, self).__init__()
         self.data = data
         self.max_seq_length = max_seq_length
@@ -206,12 +210,13 @@ class AstCfcDataset_old(Dataset):
         self.ast_tokenizer = ast_tokenizer
         self.structure_token_id = structure_token_id
         self.max_structure_length = max_structure_length
+        self.fim_tokens_ids = fim_tokens_ids
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, ind):
-        fim_prefix, fim_suffix, fim_middle = torch.tensor([1]), torch.tensor([3]), torch.tensor([2])
+
         left_context_ids = torch.tensor(self.data[ind]['lc_token_ids'])
         right_context_ids = torch.tensor(self.data[ind]['rc_token_ids'])
         cfc_ids = torch.tensor(self.data[ind]['cfc_token_ids'])
@@ -232,14 +237,8 @@ class AstCfcDataset_old(Dataset):
             structure_ids.extend(patch_ids)
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
-        input_ids = torch.cat([
-            fim_prefix,
-            left_context_ids,
-            fim_suffix,
-            right_context_ids,
-            torch.tensor([self.structure_token_id] * num_structure_tokens),
-            fim_middle,
-            target_ids]).to(torch.long)
+        input_ids = pack_fim_inputs(
+            self.fim_tokens_ids, left_context_ids, right_context_ids, target_ids, self.structure_token_id, num_structure_tokens)
 
         item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
         return item
@@ -250,9 +249,11 @@ class AstCfcDataset(Dataset):
     """
     def __init__(self,
                  data,
+                 training_stage,
                  ast_tokenizer,
                  code_tokenizer,
                  structure_token_id,
+                 fim_tokens_ids,
                  num_structure_tokens=None,
                  max_seq_length=2048,
                  max_structure_length=512,
@@ -266,50 +267,63 @@ class AstCfcDataset(Dataset):
         self.max_structure_length = max_structure_length
         self.lc_rc_ratio = lc_rc_ratio
         self.num_structure_tokens = num_structure_tokens
+        self.fim_tokens_ids = fim_tokens_ids
+        self.training_stage = training_stage
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, ind):
-        fim_prefix_id = torch.tensor(self.code_tokenizer.convert_tokens_to_ids(['<fim_prefix>']))
-        fim_suffix_id = torch.tensor(self.code_tokenizer.convert_tokens_to_ids(['<fim_suffix>']))
-        fim_middle_id = torch.tensor(self.code_tokenizer.convert_tokens_to_ids(['<fim_middle>']))
+        if self.training_stage == 0:
+            # instead of figuring out how to unravel this into 10x bigger dataset, just choose a random and increase number of epochs
+            chunk = random.choice(self.data[ind]['content']['crossfile_array'])
+            cfc = '\n'.join(chunk.splitlines()[1:]).replace('#', '')  # removing file path in the first line and decommenting
 
-        left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt').input_ids[0]
-        right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt').input_ids[0]
-        target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt').input_ids[0]
+            input_ids = self.code_tokenizer(cfc).input_ids  # turning cfc to tokens of the language model
 
-        tgt_len = len(target_ids)
-        if not self.num_structure_tokens:
-            self.num_structure_tokens = len(self.data[ind]['content']['crossfile_array'])
-        lr_budget = self.max_seq_length - tgt_len - self.num_structure_tokens - 3  # 3 tokens for FIM
-        rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
-        lc_budget = int(rc_budget * self.lc_rc_ratio)
-
-        left_context_ids = left_context_ids[-lc_budget:]
-        right_context_ids = right_context_ids[:rc_budget]
-
-        structure_ids = []
-        for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
-            cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
-            ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # decommenting
+            ast_tokens = AST(cfc, 'python', self.ast_tokenizer)  # decommenting
             ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
             chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
                 + ast_tokens + [self.ast_tokenizer.sep_token]
-            chunk_ids = self.ast_tokenizer.convert_tokens_to_ids(chunk_tokens)
-            structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id))
-        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
+            structure_ids = self.ast_tokenizer.convert_tokens_to_ids(chunk_tokens)
 
-        input_ids = torch.cat([
-            fim_prefix_id,
-            left_context_ids,
-            fim_suffix_id,
-            right_context_ids,
-            torch.tensor([self.structure_token_id] * self.num_structure_tokens),
-            fim_middle_id,
-            target_ids]).to(torch.long)
+            item = {"input_ids": input_ids, 'structure_ids': structure_ids}
 
-        item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+        elif self.training_stage == 1:
+
+            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt').input_ids[0]
+            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt').input_ids[0]
+            target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt').input_ids[0]
+
+            tgt_len = len(target_ids)
+            if not self.num_structure_tokens:
+                self.num_structure_tokens = len(self.data[ind]['content']['crossfile_array'])
+            lr_budget = self.max_seq_length - tgt_len - self.num_structure_tokens - 3  # 3 tokens for FIM
+            rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
+            lc_budget = int(rc_budget * self.lc_rc_ratio)
+
+            left_context_ids = left_context_ids[-lc_budget:]
+            right_context_ids = right_context_ids[:rc_budget]
+
+            structure_ids = []
+            for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
+                cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
+                ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # decommenting
+                ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
+                chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
+                    + ast_tokens + [self.ast_tokenizer.sep_token]
+                chunk_ids = self.ast_tokenizer.convert_tokens_to_ids(chunk_tokens)
+                structure_ids.append(F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id))
+            structure_ids = torch.hstack(structure_ids)
+
+            input_ids = pack_fim_inputs(
+                self.fim_tokens_ids, left_context_ids, right_context_ids, target_ids, self.structure_token_id, self.num_structure_tokens)
+
+            item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+
+        else:
+            raise NotImplementedError(f'Invalid stage value: {self.stage}')
+
         return item
 
 

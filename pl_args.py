@@ -13,7 +13,7 @@ def add_program_args():
     parser.add_argument("--seed", type=int, default=42, help="value to seed RNG of torch, numpy")
     parser.add_argument("--track_steps", action="store_true", help="if True, progress bar will track training batches, else will track epochs")
     parser.add_argument("--save_step_frequency", default=1000, help="Number of steps (update steps) between saving checkpoints", type=int)
-    parser.add_argument("--training_stage", type=int, default=1, help='Stage 1: only projection is trained. Stage 2: llm and projection are trained.')
+    parser.add_argument("--training_stage", type=int, default=1, choices=[0, 1, 2], help='Stage 0: only projection is trained on mse loss. Stage 1: only projection is trained on entropy loss. Stage 2: llm and projection are trained on entropy loss.')
     parser.add_argument("--exp_name", type=str, help="Name of the experiment. Required for logging.")
     return parser
 
@@ -46,7 +46,7 @@ def add_model_args(parent_parser):
     parser.add_argument("--text_model_id", type=str, required=True)
     parser.add_argument("--structure_model_id", type=str, required=True)
     parser.add_argument("--num_structure_tokens", type=int, default=5)
-    parser.add_argument("--pad_token_id", type=int, default=50256)  # see here https://github.com/salesforce/CodeGen/blob/2ca076874ca2d26c2437df2968f6c43df92748bc/jaxformer/hf/sample.py#L201
+    # parser.add_argument("--pad_token_id", type=int, default=50256)  # see here https://github.com/salesforce/CodeGen/blob/2ca076874ca2d26c2437df2968f6c43df92748bc/jaxformer/hf/sample.py#L201
     parser.add_argument("--dropout_layers", type=int, default=-1, help="Number of layers to add dropout to; if -1, dropout will be added to all layers; if 0, no dropout will be used")
     parser.add_argument("--dropout_p", type=float, default=0.1, help="Value of dropout probability to be added")
     parser.add_argument("--functional_dropout", action="store_true", help="If True, will use functional dropout on the token level representations")

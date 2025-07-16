@@ -18,7 +18,7 @@ import logging
 
 from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
-from datamodule import LlavaCodeDataModule
+from datamodule import LlavaCodeDataModule, STRUCTURE_TOKEN
 from pl_logger import ClearMLLogger
 
 load_dotenv()
@@ -85,9 +85,10 @@ if __name__ == "__main__":
     args.val_check_interval *= args.accumulate_grad_batches
 
     code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
-    code_tokenizer.add_tokens(['<CODE_STRUCTURE>'])
+    code_tokenizer.add_tokens([STRUCTURE_TOKEN])
     if code_tokenizer.pad_token_id is None:
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
+    structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
     structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
@@ -96,7 +97,7 @@ if __name__ == "__main__":
     text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
-                                    structure_token_id=49152)
+                                    structure_token_id=structure_token_id)
 
     if args.model_checkpoint is not None:
         logger.info(f"Loading checkpoint: {args.model_checkpoint}")
@@ -110,13 +111,14 @@ if __name__ == "__main__":
     elif 'graphcodebert' in args.structure_model_id.lower():
         structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
 
-    # Stage 1: only projection is trained
-    # Stage 2: projection and llm are trained
+    # Stage 0: only projection is trained on mse loss
+    # Stage 1: only projection is trained on entropy loss
+    # Stage 2: projection and llm are trained on entropy loss
     # structure model weights are always frozen
     for p in model.model.structure_model.parameters():
         p.requires_grad = False
 
-    if args.training_stage == 1:
+    if args.training_stage == 0 or args.training_stage == 1:
         for p in model.model.language_model.parameters():
             p.requires_grad = False
 
@@ -135,12 +137,15 @@ if __name__ == "__main__":
         args.valid_datadir,
         args.train_batch_size,
         args.valid_batch_size,
+        fim_tokens=['<fim_prefix>', '<fim_suffix>', '<fim_middle>'],
+        training_stage=args.training_stage,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
         structure_tokenizer=structure_tokenizer,
-        structure_token_id=49152,
+        structure_token_id=structure_token_id,
         num_structure_tokens=args.num_structure_tokens,
     )
+    print('Training stage:', args.training_stage)
     data.setup()
     args.num_training_examples = len(data.train_dataloader())
 
@@ -157,7 +162,6 @@ if __name__ == "__main__":
 
     clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=['unixcoder', 'starcoder-1b'])
     csv_logger = CSVLogger("lightning_logs/", name=args.exp_name, version="")
-    # clearml_logger.create_task(project_name='LlavaCode', task_name='projection_ast_cfc', tags=['unixcoder', 'starcoder-1b'])
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {

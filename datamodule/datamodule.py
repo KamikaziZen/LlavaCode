@@ -42,18 +42,15 @@ class LlavaCodeDataCollator:
             return_tensors='pt',
             padding_side='right'
         )
-
         batch['structure_ids'] = structure_batch['input_ids']
-        batch['num_structure_tokens'] = torch.tensor([f['num_structure_tokens'] for f in features], dtype=torch.int)
+
+        if 'num_structure_tokens' in features[0].keys():
+            batch['num_structure_tokens'] = torch.tensor([f['num_structure_tokens'] for f in features], dtype=torch.int)
 
         if 'structure_pos_idx' in features[0].keys():
             batch['structure_pos_idx'] = torch.vstack([f['structure_pos_idx'] for f in features])  # assumed to be  already padded
-            for f in features:
-                assert len(f['structure_pos_idx']) == 5 * 512, f"len of structure_pos_idx: {len(f['structure_pos_idx'])}, shape: {f['structure_pos_idx'].shape}"
         if 'structure_attn_mask' in features[0].keys():
-            batch['structure_attn_mask'] = [f['structure_attn_mask'] for f in features]  # assumed to be  already padded
-            # for f in features:
-            #     assert len(f['structure_attn_mask']) == 5 * 512, f"len of structure_attn_mask: {len(f['structure_attn_mask'])}, shape: {f['structure_attn_mask'].shape}"
+            batch['structure_attn_mask'] = torch.vstack([f['structure_attn_mask'] for f in features])  # assumed to be  already padded
 
         return batch
 
@@ -61,7 +58,7 @@ class LlavaCodeDataCollator:
 class LlavaCodeDataModule(LightningDataModule):
     def __init__(self, data_prefix, train_datadir, valid_datadir, train_batch_size,
                  valid_batch_size, code_tokenizer, structure_tokenizer, structure_token_id,
-                 num_structure_tokens=5, num_workers=0,):
+                 fim_tokens, training_stage, num_structure_tokens=5, num_workers=0,):
         super(LlavaCodeDataModule, self).__init__()
         self.data_prefix = data_prefix
         self.train_datadir = train_datadir
@@ -74,12 +71,19 @@ class LlavaCodeDataModule(LightningDataModule):
         self.structure_token_id = structure_token_id
         self.num_structure_tokens = num_structure_tokens
 
+        self.fim_tokens = fim_tokens
+        self.fim_tokens_ids = torch.tensor(self.code_tokenizer.convert_tokens_to_ids(fim_tokens))
+
+        print('FIM tokens:', fim_tokens)
+
         self.data_collator = LlavaCodeDataCollator(code_tokenizer, structure_tokenizer)
+
+        self.training_stage = training_stage
 
         logger.info(f"Initializing DataModule w/ train_bs={self.train_batch_size}, "
                     f"valid_bs={self.valid_batch_size}")
 
-    def get_dataset(self, raw_data):
+    def get_dataset(self, raw_data, training_stage):
         if self.data_prefix == 'ast_lcontext':
             return AstLcontextDataset(
                 raw_data,
@@ -90,8 +94,10 @@ class LlavaCodeDataModule(LightningDataModule):
         elif self.data_prefix == 'ast_cfc':
             return AstCfcDataset(
                 raw_data,
+                training_stage=training_stage,
                 code_tokenizer=self.code_tokenizer,
                 ast_tokenizer=self.structure_tokenizer,
+                fim_tokens_ids=self.fim_tokens_ids,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
@@ -133,8 +139,8 @@ class LlavaCodeDataModule(LightningDataModule):
         train_orig_data = load_from_disk(self.train_datadir)
         valid_orig_data = load_from_disk(self.valid_datadir)
 
-        self.train_data = self.get_dataset(train_orig_data)
-        self.valid_data = self.get_dataset(valid_orig_data)
+        self.train_data = self.get_dataset(train_orig_data, training_stage=self.training_stage)
+        self.valid_data = self.get_dataset(valid_orig_data, training_stage=self.training_stage)
 
         logger.info(f'Loaded Train data with {len(self.train_data)} examples')
         logger.info(f"train_bs={self.train_batch_size}\t "

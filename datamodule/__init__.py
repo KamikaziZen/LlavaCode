@@ -1,5 +1,7 @@
 from .datamodule import LlavaCodeDataModule
+from .const import STRUCTURE_TOKEN
 
 __all__ = [
-    "LlavaCodeDataModule"
+    "LlavaCodeDataModule",
+    "STRUCTURE_TOKEN"
 ]
