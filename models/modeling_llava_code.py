@@ -199,6 +199,8 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             self.structure_model.load_state_dict(torch.load(self.config.structure_config.model_id))
         elif 'graphcodebert' in self.config.structure_config.model_id.lower():
             self.structure_model = RobertaForSequenceClassification.from_pretrained(self.config.structure_config.model_id, config=self.config.structure_config)
+        elif 'jina' in self.config.structure_config.model_id.lower():
+            self.structure_model = AutoModel.from_pretrained(self.config.structure_config.model_id, trust_remote_code=True)
         else:
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 

@@ -6,13 +6,13 @@ CUDA_VISIBLE_DEVICES=0,1 python train.py \
     --num_nodes 1 \
     --accelerator gpu \
     --text_model_id bigcode/starcoderbase-1b \
-    --structure_model_id microsoft/unixcoder-base \
+    --structure_model_id jinaai/jina-embeddings-v2-base-en \
     --pad_token_id 0 \
     --dropout_p 0. \
     --default_root_dir ./ \
     --data_prefix ast_cfc \
-    --train_datadir /home/jovyan/sukhorukov/codegen/data_python/prepared_data/processed/train \
-    --valid_datadir /home/jovyan/sukhorukov/codegen/data_python/prepared_data/processed/valid \
+    --train_datadir /home/sushko/LlavaCode/data/train \
+    --valid_datadir /home/sushko/LlavaCode/data/valid \
     --log_dir ./logs/ \
     --seed 1234 \
     --lr 2e-3 \

@@ -23,7 +23,7 @@ from pl_logger import ClearMLLogger
 
 load_dotenv()
 token = os.getenv("HF_TOKEN")
-login(token=token)
+login(token='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')
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -70,7 +70,6 @@ class CheckpointEveryNSteps(pl.Callback):
 
 
 if __name__ == "__main__":
-
     parser = add_program_args()
     parser = add_model_args(parser)
     parser = add_pl_args(parser)
@@ -89,7 +88,7 @@ if __name__ == "__main__":
     if code_tokenizer.pad_token_id is None:
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
 
-    structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
+    structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
@@ -109,6 +108,8 @@ if __name__ == "__main__":
         structure_tokenizer = model.model.structure_model.tokenizer
     elif 'graphcodebert' in args.structure_model_id.lower():
         structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
+    elif 'jina' in args.structure_model_id.lower():
+        structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
 
     # Stage 1: only projection is trained
     # Stage 2: projection and llm are trained
@@ -155,14 +156,14 @@ if __name__ == "__main__":
     # callbacks.append(checkpoint_callback)
     # callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
 
-    clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=['unixcoder', 'starcoder-1b'])
+    # clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=['unixcoder', 'starcoder-1b'])
     csv_logger = CSVLogger("lightning_logs/", name=args.exp_name, version="")
     # clearml_logger.create_task(project_name='LlavaCode', task_name='projection_ast_cfc', tags=['unixcoder', 'starcoder-1b'])
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
         'callbacks': callbacks,
-        'logger': [clearml_logger, csv_logger],
+        'logger': [csv_logger],
         'strategy': DeepSpeedStrategy(config=args.ds_config) \
             if args.use_deepspeed else DDPStrategy(find_unused_parameters=False),
         'num_nodes': args.num_nodes,
