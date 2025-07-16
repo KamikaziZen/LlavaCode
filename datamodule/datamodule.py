@@ -13,6 +13,7 @@ from .unixcoder import (
     CodeAstCfcDataset,
 )
 from .graphcodebert import DfgDataset
+from .jina import JinaDataset
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -58,7 +59,7 @@ class LlavaCodeDataCollator:
 class LlavaCodeDataModule(LightningDataModule):
     def __init__(self, data_prefix, train_datadir, valid_datadir, train_batch_size,
                  valid_batch_size, code_tokenizer, structure_tokenizer, structure_token_id,
-                 fim_tokens, training_stage, num_structure_tokens=5, num_workers=0,):
+                 fim_tokens, training_stage, num_structure_tokens, num_workers=0,):
         super(LlavaCodeDataModule, self).__init__()
         self.data_prefix = data_prefix
         self.train_datadir = train_datadir
@@ -83,7 +84,7 @@ class LlavaCodeDataModule(LightningDataModule):
         logger.info(f"Initializing DataModule w/ train_bs={self.train_batch_size}, "
                     f"valid_bs={self.valid_batch_size}")
 
-    def get_dataset(self, raw_data, training_stage):
+    def get_dataset(self, raw_data):
         if self.data_prefix == 'ast_lcontext':
             return AstLcontextDataset(
                 raw_data,
@@ -94,7 +95,7 @@ class LlavaCodeDataModule(LightningDataModule):
         elif self.data_prefix == 'ast_cfc':
             return AstCfcDataset(
                 raw_data,
-                training_stage=training_stage,
+                training_stage=self.training_stage,
                 code_tokenizer=self.code_tokenizer,
                 ast_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
@@ -102,11 +103,20 @@ class LlavaCodeDataModule(LightningDataModule):
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
         elif self.data_prefix == 'code_cfc':
-            return CodeCfcDataset(
+            # return CodeCfcDataset(
+            #     raw_data,
+            #     code_tokenizer=self.code_tokenizer,
+            #     ast_tokenizer=self.structure_tokenizer,
+            #     structure_token_id=self.structure_token_id,
+            #     max_structure_length=512)
+            return JinaDataset(
                 raw_data,
+                training_stage=self.training_stage,
                 code_tokenizer=self.code_tokenizer,
                 ast_tokenizer=self.structure_tokenizer,
+                fim_tokens_ids=self.fim_tokens_ids,
                 structure_token_id=self.structure_token_id,
+                num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
         elif self.data_prefix == 'codeast_cfc':
             return CodeAstCfcDataset(
@@ -139,8 +149,8 @@ class LlavaCodeDataModule(LightningDataModule):
         train_orig_data = load_from_disk(self.train_datadir)
         valid_orig_data = load_from_disk(self.valid_datadir)
 
-        self.train_data = self.get_dataset(train_orig_data, training_stage=self.training_stage)
-        self.valid_data = self.get_dataset(valid_orig_data, training_stage=self.training_stage)
+        self.train_data = self.get_dataset(train_orig_data)
+        self.valid_data = self.get_dataset(valid_orig_data)
 
         logger.info(f'Loaded Train data with {len(self.train_data)} examples')
         logger.info(f"train_bs={self.train_batch_size}\t "
@@ -148,9 +158,9 @@ class LlavaCodeDataModule(LightningDataModule):
         time.sleep(5)
 
     def train_dataloader(self):
-        return DataLoader(self.train_data, batch_size=self.train_batch_size,
-                          collate_fn=self.data_collator, num_workers=8, shuffle=True)
+        return DataLoader(
+            self.train_data, batch_size=self.train_batch_size, collate_fn=self.data_collator, num_workers=8, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.valid_data, batch_size=self.valid_batch_size,
-                          collate_fn=self.data_collator, num_workers=8, shuffle=False)
+        return DataLoader(
+            self.valid_data, batch_size=self.valid_batch_size, collate_fn=self.data_collator, num_workers=8, shuffle=False)

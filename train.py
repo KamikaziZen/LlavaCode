@@ -90,7 +90,8 @@ if __name__ == "__main__":
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
     structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
-    structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
+    # structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
+    structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
@@ -110,6 +111,8 @@ if __name__ == "__main__":
         structure_tokenizer = model.model.structure_model.tokenizer
     elif 'graphcodebert' in args.structure_model_id.lower():
         structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
+    elif 'jina' in args.structure_model_id.lower():
+        structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
 
     # Stage 0: only projection is trained on mse loss
     # Stage 1: only projection is trained on entropy loss
@@ -137,7 +140,7 @@ if __name__ == "__main__":
         args.valid_datadir,
         args.train_batch_size,
         args.valid_batch_size,
-        fim_tokens=['<fim_prefix>', '<fim_suffix>', '<fim_middle>'],
+        fim_tokens=['<fim_prefix>', '<fim_suffix>', '<fim_middle>'],  # TODO: create a constant mapping
         training_stage=args.training_stage,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
@@ -160,7 +163,8 @@ if __name__ == "__main__":
     # callbacks.append(checkpoint_callback)
     # callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
 
-    clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=['unixcoder', 'starcoder-1b'])
+    tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1]]
+    clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=tags)
     csv_logger = CSVLogger("lightning_logs/", name=args.exp_name, version="")
 
     logger.info('Initializing PL Trainer...')

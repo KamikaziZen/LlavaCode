@@ -32,6 +32,7 @@ from typing import List, Optional, Tuple, Union
 
 from .modeling_unixcoder import UniXcoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
+from .modeling_jina import JinaEncoder
 
 
 class LlavaCodeConfig(PretrainedConfig):
@@ -194,12 +195,15 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         super().__init__(config)
         if 'unixcoder' in self.config.structure_config.model_id.lower():
             self.structure_model = UniXcoder(self.config.structure_config.model_id)
-        elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
-            self.structure_model = EnhancedGNNEncoder(
-                hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
-            self.structure_model.load_state_dict(torch.load(self.config.structure_config.model_id))
+        # elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
+        #     self.structure_model = EnhancedGNNEncoder(
+        #         hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
+        #     self.structure_model.load_state_dict(torch.load(self.config.structure_config.model_id))
         elif 'graphcodebert' in self.config.structure_config.model_id.lower():
             self.structure_model = RobertaForSequenceClassification.from_pretrained(self.config.structure_config.model_id, config=self.config.structure_config)
+        elif 'jina' in self.config.structure_config.model_id.lower():
+            self.structure_model = JinaEncoder(
+                model=AutoModel.from_pretrained(self.config.structure_config.model_id, trust_remote_code=True), config=self.config.structure_config)
         else:
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
@@ -242,12 +246,12 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         elif structure_pos_idx is None and structure_attn_mask is None:
 
             # structure values: ast tree sequence ids
-            _, structure_embedding = self.structure_model(structure_values.reshape(-1, 512))  # unixcoder takes care of attention mask inside the forward method
+            _, structure_embedding = self.structure_model(structure_values.reshape(-1, 512))  # unixcoder and jina take care of attention mask inside the forward method
         else:
 
             raise ValueError('Incorrect inputs to get_structure_features()')
 
-        if nums_structure_tokens:
+        if nums_structure_tokens is not None:
             # this is not triggered during the stage 0 training, since there are no structure tokens in the input_ids (nums_structure_tokens is None)
             # nums_structure_tokens: number of structure tokens for each sample in a batch
             max_num = nums_structure_tokens.max()
@@ -598,8 +602,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_values=structure_ids,
                 structure_attn_mask=structure_attn_mask,
                 structure_pos_idx=structure_pos_idx,
-                num_structure_tokens=num_structure_tokens,
-                stage=self.training).logits
+                num_structure_tokens=num_structure_tokens).logits
 
             loss = self.mle_loss(logits.view(-1, self.vocab_size), labels.view(-1))
             self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
