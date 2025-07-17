@@ -59,7 +59,7 @@ def add_model_args(parent_parser):
     parser.add_argument("--train_batch_size", type=int, default=64, help="Batch size for training combined across all devices.")
     parser.add_argument("--valid_batch_size", type=int, default=64, help="Batch size for validation combined across all devices.")
     # objective
-    parser.add_argument("--loss", type=str, help="Loss function name", default="MLE_Only", choices=["MLE_Only",  "Repoformer"])
+    parser.add_argument("--loss", type=str, help="Loss function name", choices=['mle', 'mse', 'cosine'])
     # args for repoformer    
     parser.add_argument("--full_sequence_code_completion_loss", action='store_true')
     parser.add_argument("--debug_disable_adding_new_token", action='store_true')

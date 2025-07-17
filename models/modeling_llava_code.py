@@ -395,8 +395,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.model = LlavaCodeModel(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
-        self.mle_loss = nn.CrossEntropyLoss()
-        self.mse_loss = nn.MSELoss(reduction='mean')
         self.vocab_size = self.config.text_config.vocab_size
         self.language_model.resize_token_embeddings(self.vocab_size)
         self.pad_token_id = config.pad_token_id
@@ -431,10 +429,14 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             self.lr_scheduler_type = self.trainer_args.lr_scheduler_type
             self.world_size = self.trainer_args.devices * self.num_nodes
+
             # Loss Configuration
-            self.loss = self.trainer_args.loss
-            assert self.loss in ["MLE_Only", "ContraCLM", "ContraCLMTok", "ContraCLMSeq", "Repoformer"], \
-                f"Loss: `{self.loss}` is not supported!"
+            if self.trainer_args.loss == 'mse':
+                self.loss = nn.MSELoss(reduction='mean')
+            elif self.trainer_args.loss == 'mle':
+                self.loss = nn.CrossEntropyLoss()
+            elif self.trainer_args.loss == 'cosine':
+                self.loss = lambda x, y: (1 - F.cosine_similarity(x, y)).mean()
 
             self.training_stage = self.trainer_args.training_stage
 
@@ -580,20 +582,14 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
         input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
-        # print(input_ids)
-        # print(attention_mask)
-        # print('Training stage in trainig_step: ', self.training_stage)
         if self.training_stage == 0:
-            # print('0! training')
             with torch.no_grad():
                 token_embeddings = self.language_model.wte(input_ids)
                 sentence_embeddings = (token_embeddings * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
-            # print(sentence_embeddings)
             structure_features = self.model.get_structure_features(structure_ids)
-            # print('structure features', structure_features.shape)
-            # print(structure_features)
 
-            loss = self.mse_loss(structure_features, sentence_embeddings)
+            loss = self.loss(structure_features, sentence_embeddings)
+            self.log("Train/Loss/MSE", loss, sync_dist=True, on_step=True, prog_bar=True)
 
         else:
             logits = self(
@@ -604,13 +600,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_pos_idx=structure_pos_idx,
                 num_structure_tokens=num_structure_tokens).logits
 
-            loss = self.mle_loss(logits.view(-1, self.vocab_size), labels.view(-1))
+            loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
             self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        eval_fct = torch.nn.CrossEntropyLoss()
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
         input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
@@ -622,7 +617,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 sentence_embeddings = (token_embeddings * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
                 structure_features = self.model.get_structure_features(structure_ids)
 
-            loss = F.mse_loss(structure_features, sentence_embeddings)
+            loss = self.loss(structure_features, sentence_embeddings)
         else:
 
             logits = self(
@@ -632,7 +627,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_attn_mask=structure_attn_mask,
                 structure_pos_idx=structure_pos_idx,
                 num_structure_tokens=num_structure_tokens).logits
-            loss = eval_fct(logits.view(-1, self.vocab_size), labels.view(-1))
+            loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
 
         self.validation_step_outputs.append(loss)
         return loss
