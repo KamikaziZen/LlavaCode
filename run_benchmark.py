@@ -15,6 +15,7 @@ from tqdm import tqdm
 from models import LlavaCodeConfig, LlavaCodeForConditionalGeneration
 from eval_metric import compute_metric_stmt
 from eval_metric_cceval import compute_metric_stmt_cceval
+from datamodule import STRUCTURE_TOKEN
 
 device = torch.device("cuda:0")
 
@@ -40,7 +41,8 @@ def prepare_prompt(tokenizer,
                    left_cxt,
                    right_cxt=None,
                    crossfile_cxt=None):
-
+    """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
+        """
     # if args.data_prefix == 'code_cfc':
     #     """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
     #     """
@@ -58,8 +60,6 @@ def prepare_prompt(tokenizer,
     #     return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
     if args.data_prefix == 'code_cfc':
-        """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
-        """
         # splitting context into chunks
         # one chunk for one file
         lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
@@ -82,11 +82,12 @@ def prepare_prompt(tokenizer,
         num_injection_tokens = len(chunks)
         structure_ids = []
         for cfc in chunks:
-            code_tokens = structure_tokenizer.tokenize(crossfile_cxt)
-            code_tokens = code_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
-            chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
-                + code_tokens + [structure_tokenizer.sep_token]
-            chunk_ids = structure_tokenizer.convert_tokens_to_ids(chunk_tokens)
+            cfc_tokens = structure_tokenizer.tokenize(cfc)
+            # code_tokens = code_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
+            # chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
+            #     + code_tokens + [structure_tokenizer.sep_token]
+            cfc_tokens = cfc_tokens[:args.max_structure_length]
+            chunk_ids = structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
             structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
@@ -97,24 +98,23 @@ def prepare_prompt(tokenizer,
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
     # elif args.data_prefix == 'ast_cfc':
-    # """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
-    # """
+    #     """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
+    #     """
 
     #     # AST function ignores comments
     #     structure_tokens = AST(crossfile_cxt.replace('#', ''), 'python', structure_tokenizer)
     #     patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
     #     structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
-    #     structure_ids = F.pad(structure_ids,
-    #                           (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
-    #                           value=structure_tokenizer.pad_token_id)
+    #     structure_ids = F.pad(
+    #         structure_ids, (0, args.max_structure_length * num_injection_tokens - len(structure_ids)), value=structure_tokenizer.pad_token_id)
 
     #     left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
     #     right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
     #     prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
 
+    #     return prompt, structure_ids, torch.tensor([num_injection_tokens])
+
     elif args.data_prefix == 'ast_cfc':
-        """Dataset type: n chunks of cross-file context, m lines each, stored as an array
-        """
         # splitting context into chunks
         # one chunk for one file
         lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
@@ -178,7 +178,11 @@ def prepare_prompt(tokenizer,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
+
+        if 'starcoder' in args.text_model_id.lower():
+            prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}<fim_middle>'
+        elif 'qwen' in args.text_model_id.lower():
+            prompt = f'<|fim_prefix|>{left_cxt_truncated}' + f'<|fim_suffix|>{right_cxt_truncated}<|fim_middle|>'
 
         return prompt, None, None
 
@@ -188,7 +192,11 @@ def prepare_prompt(tokenizer,
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length - args.cfc_seq_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
         crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode('\n\n' + crossfile_cxt)[:args.cfc_seq_length])
-        prompt = f'<fim_prefix>{left_cxt_truncated}<fim_suffix>{right_cxt_truncated}{crossfile_cxt_truncated}<fim_middle>'
+
+        if 'starcoder' in args.text_model_id.lower():
+            prompt = f'<fim_prefix>{left_cxt_truncated}<fim_suffix>{right_cxt_truncated}{crossfile_cxt_truncated}<fim_middle>'
+        elif 'qwen' in args.text_model_id.lower():
+            prompt = f'{crossfile_cxt_truncated}<|fim_prefix|>{left_cxt_truncated}<|fim_suffix|>{right_cxt_truncated}<|fim_middle|>'
 
         return prompt, None, None
 
@@ -211,8 +219,8 @@ def build_dataset(args, code_tokenizer, ast_tokenizer):
             crossfile_cxt = entry["crossfile_context"] if type(entry["crossfile_context"]) == str else entry["crossfile_context"]['text']
 
         entry['llm_prompt'], entry['structure_ids'], entry['num_structure_tokens'] = \
-            prepare_prompt(code_tokenizer, ast_tokenizer,
-                           left_cxt, right_cxt, crossfile_cxt)
+            prepare_prompt(
+                code_tokenizer, ast_tokenizer, left_cxt, right_cxt, crossfile_cxt)
 
         data.append(entry)
 
@@ -223,6 +231,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--text_model_id", type=str, required=True)
+    parser.add_argument("--structure_model_id", type=str, required=True)
     parser.add_argument("--language", type=str, required=True, help="language name")
     parser.add_argument("--model_checkpoint", type=str)
     parser.add_argument("--task", type=str, choices=["line_completion", "api_completion", "function_completion"])
@@ -247,27 +257,38 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, help='path to args config')
 
     args = parser.parse_args()
-
     print('Input args:', args)
 
-    code_tokenizer = AutoTokenizer.from_pretrained('bigcode/starcoderbase-1b', use_fast=False)
+    code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
     code_tokenizer.add_tokens(['<CODE_STRUCTURE>'])
-    if code_tokenizer.pad_token_id is None:
+    if code_tokenizer.pad_token_id is None:  # case with starcoder
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
+    structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
-    ast_tokenizer = RobertaTokenizer.from_pretrained("microsoft/unixcoder-base")
-    ast_tokenizer.add_tokens(["<mask0>"], special_tokens=True)
+    if 'unixcoder' in args.structure_model_id.lower():
+        structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
+        structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
+        structure_tokenizer.add_tokens(["<mask0>"], special_tokens=True)
+    elif 'graphcodebert' in args.structure_model_id.lower():
+        structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
+        structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
+    elif 'jina' in args.structure_model_id.lower():
+        structure_config = AutoConfig.from_pretrained(args.structure_model_id)
+        structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
+    else:
+        raise NotImplementedError(args.structure_model_id)
+    structure_config.model_id = args.structure_model_id
+    text_config = AutoConfig.from_pretrained(args.text_model_id)
+    text_config.model_id = args.text_model_id
 
-    data = build_dataset(args, code_tokenizer, ast_tokenizer)
-
-    structure_config = RobertaConfig.from_pretrained("microsoft/unixcoder-base")
-    structure_config.model_id = "microsoft/unixcoder-base"
-    text_config = AutoConfig.from_pretrained('bigcode/starcoderbase-1b')
-    text_config.model_id = 'bigcode/starcoderbase-1b'
+    # TODO: is it possible to include <CODE_STRUCTURE> -> vector mapping without resizing embeddings?
+    # possible implementation: qwen tokens <|repo_name|> and <|file_sep|> tokens
+    # this is necessary for resize_token_embeddings() call
     text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
-                                    structure_token_id=49152)
+                                    structure_token_id=structure_token_id)
+    print('tokenizer shapes:', code_tokenizer.vocab_size, len(code_tokenizer))  # delete later
 
     if args.model_checkpoint:
         model = LlavaCodeForConditionalGeneration \
@@ -275,11 +296,14 @@ if __name__ == "__main__":
     else:
         model = LlavaCodeForConditionalGeneration(configuration).to(device)
 
+    data = build_dataset(args, code_tokenizer, structure_tokenizer)
+
     all_preds = []
     for entry in tqdm(data):
 
         entropies = []
         with torch.no_grad():
+
             inputs = code_tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
             cut_at = inputs.input_ids.shape[1]
             if args.data_prefix not in ['default', 'default_cfc']:

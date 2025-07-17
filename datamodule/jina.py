@@ -13,7 +13,7 @@ class JinaDataset(Dataset):
     def __init__(self,
                  data,
                  training_stage,
-                 ast_tokenizer,
+                 structure_tokenizer,
                  code_tokenizer,
                  structure_token_id,
                  fim_tokens_ids,
@@ -25,7 +25,7 @@ class JinaDataset(Dataset):
         self.data = data
         self.max_seq_length = max_seq_length
         self.code_tokenizer = code_tokenizer
-        self.ast_tokenizer = ast_tokenizer
+        self.structure_tokenizer = structure_tokenizer
         self.num_structure_tokens = num_structure_tokens
         self.structure_token_id = structure_token_id
         self.max_structure_length = max_structure_length
@@ -46,9 +46,9 @@ class JinaDataset(Dataset):
 
             input_ids = self.code_tokenizer(cfc).input_ids  # turning cfc to tokens of the language model
 
-            cfc_tokens = self.ast_tokenizer.tokenize(cfc)  # TODO: try decommenting?
+            cfc_tokens = self.structure_tokenizer.tokenize(cfc)  # TODO: try decommenting?
             cfc_tokens = cfc_tokens[:self.max_structure_length]
-            chunk_ids = self.ast_tokenizer.convert_tokens_to_ids(cfc_tokens)
+            chunk_ids = self.structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
 
             item = {"input_ids": input_ids, 'structure_ids': chunk_ids}
 
@@ -69,10 +69,10 @@ class JinaDataset(Dataset):
             structure_ids = []
             for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
-                cfc_tokens = self.ast_tokenizer.tokenize(cfc)  # TODO: try decommenting?
+                cfc_tokens = self.structure_tokenizer.tokenize(cfc)  # TODO: try decommenting?
                 cfc_tokens = cfc_tokens[:self.max_structure_length]
-                chunk_ids = self.ast_tokenizer.convert_tokens_to_ids(cfc_tokens)
-                structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id))
+                chunk_ids = self.structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
+                structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.structure_tokenizer.pad_token_id))
             structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
             input_ids = pack_fim_inputs(
