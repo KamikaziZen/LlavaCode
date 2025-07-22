@@ -36,7 +36,8 @@ def tokenize_patches(tokens, patch_length, tokenizer):
     return tokens_ids, num_injection_tokens
 
 
-def prepare_prompt(tokenizer,
+def prepare_prompt(args,
+                   tokenizer,
                    structure_tokenizer,
                    left_cxt,
                    right_cxt=None,
@@ -220,12 +221,20 @@ def build_dataset(args, code_tokenizer, ast_tokenizer):
 
         entry['llm_prompt'], entry['structure_ids'], entry['num_structure_tokens'] = \
             prepare_prompt(
-                code_tokenizer, ast_tokenizer, left_cxt, right_cxt, crossfile_cxt)
+                args, code_tokenizer, ast_tokenizer, left_cxt, right_cxt, crossfile_cxt)
 
         data.append(entry)
 
     return data
 
+
+def remove_tokens(s, tokens=["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>", "<|im_start|>", "<|im_end|>"]):
+    indexes = [s.find(token) for token in tokens]
+    valid_indexes = [idx for idx in indexes if idx != -1]
+    if valid_indexes:
+        return s[:min(valid_indexes)]
+    else:
+        return s
 
 if __name__ == "__main__":
 
@@ -326,10 +335,11 @@ if __name__ == "__main__":
                                           max_new_tokens=args.gen_length,
                                           bad_words_ids=[[configuration.structure_token_id]])
 
-            if cur_pred[0, -1] == code_tokenizer.eos_token_id:
-                prediction = code_tokenizer.decode(cur_pred[0][cut_at:-1])
-            else:
-                prediction = code_tokenizer.decode(cur_pred[0][cut_at:])
+            prediction = code_tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
+
+            # <|fim_pad|>, <|file_sep|>, <|fim_prefix|> are not removed by skip_special_tokens=True, manual removal
+            if 'qwen' in args.text_model_id.lower():
+                prediction = remove_tokens(prediction)
 
             all_preds.append({
                 "task_id": entry["metadata"]["task_id"],

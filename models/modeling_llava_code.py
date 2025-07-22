@@ -18,6 +18,7 @@ from transformers.optimization import (
     get_inverse_sqrt_schedule,
     get_cosine_schedule_with_warmup
 )
+from transformers.cache_utils import DynamicCache
 
 from lightning.pytorch import LightningModule
 
@@ -289,7 +290,10 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         r"""
         """
         # checking if cache is already in use (use_cache=True and iter > 1)
-        using_cache = isinstance(past_key_values, list)
+        using_cache = past_key_values is not None and (
+            isinstance(past_key_values, (list, tuple)) or 
+            isinstance(past_key_values, DynamicCache)
+        )
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
