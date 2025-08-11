@@ -156,6 +156,29 @@ def prepare_prompt(args,
     elif args.data_prefix == 'default_cfc':
 
         assert crossfile_cxt is not None
+
+        lines = crossfile_cxt.splitlines()
+        skip = False
+        current_lines = []
+        chunks = []
+        for line in lines[1:]:
+            if line.startswith('# the below code fragment can be found in:'):
+                skip = True
+                if current_lines:
+                    chunks.append('\n'.join(current_lines))
+                current_lines = [line.strip()]
+            elif skip:  # skipping the file path
+                skip = False
+                current_lines.append(line.strip())
+            elif line:
+                current_lines.append(line.strip())
+        if current_lines:
+            chunks.append('\n'.join(current_lines))
+        # restrict number of injection tokens (RAG files)
+        num_injection_tokens = min(args.num_structure_tokens, len(chunks))
+        chunks = chunks[:num_injection_tokens]
+        crossfile_cxt = '\n\n'.join(lines[:1] + chunks)
+
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length - args.cfc_seq_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
         crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode('\n\n' + crossfile_cxt)[:args.cfc_seq_length])
