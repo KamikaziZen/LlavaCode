@@ -13,20 +13,23 @@ def add_program_args():
     parser.add_argument("--seed", type=int, default=42, help="value to seed RNG of torch, numpy")
     parser.add_argument("--track_steps", action="store_true", help="if True, progress bar will track training batches, else will track epochs")
     parser.add_argument("--save_step_frequency", default=1000, help="Number of steps (update steps) between saving checkpoints", type=int)
-    parser.add_argument("--training_stage", type=int, default=1, choices=[0, 1, 2], help='Stage 0: only projection is trained on mse loss. Stage 1: only projection is trained on entropy loss. Stage 2: llm and projection are trained on entropy loss.')
+    parser.add_argument(
+        "--training_stage", type=int, default=1, choices=[0, 1, 2],
+        help='''Stage 0: only projection is trained on entropy loss.
+                Stage 1: only projection is trained on entropy loss and KL-divergence (optional).
+                Stage 2: llm and projection are trained on entropy loss and KL-divergence (optional).''')
     parser.add_argument("--exp_name", type=str, help="Name of the experiment. Required for logging.")
     return parser
 
 
 def add_pl_args(parent_parser):
     parser = parent_parser.add_argument_group("pl.Trainer")
-    parser.add_argument("--val_check_interval", type=int,
-        help="Validation frequency (specify interval in # of training steps, not batches)", default=1000)
+    parser.add_argument("--val_check_interval", type=int, help="Validation frequency (specify interval in # of training steps, not batches)", default=1000)
     parser.add_argument("--devices", type=int, help="Number of gpu/cpu cores to use", default=8)
     parser.add_argument("--num_nodes", type=int, default=1)
     parser.add_argument("--accelerator", type=str, help="Number of gpu/cpu cores to use", default="gpu")
     parser.add_argument("--log_every_n_steps", type=int, help="Logging frequency (in update steps)", default=100)
-    parser.add_argument("--accumulate_grad_batches", type=int, help="Gradient accumulation steps", default=1) 
+    parser.add_argument("--accumulate_grad_batches", type=int, help="Gradient accumulation steps", default=1)
     parser.add_argument("--gradient_clip_val", type=float, help="Gradient clipping value")
     parser.add_argument("--num_training_examples", type=int, default=-1, help="Number of training examples")
     parser.add_argument("--max_steps", type=int, default=-1, help="Number of training steps")
@@ -37,6 +40,10 @@ def add_pl_args(parent_parser):
     parser.add_argument("--precision", type=str, default='16-mixed', help="training precision")
     parser.add_argument("--ds_config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepspeed', 'stage2.json'), help="deepspeed config")
     parser.add_argument("--model_checkpoint", type=str, help='Path to the checkpoint to load')
+    parser.add_argument("--projector_checkpoint", type=str, help='Path to trained projector weights')
+    parser.add_argument("--alpha_kl", type=float, help="Coefficient for KL-divergence loss term")
+    parser.add_argument("--kl_temperature", type=float, help="Temperature coefficient for calculation KL-Divergency loss")
+    parser.add_argument("--distill_topk", type=int, help='Top-k token to distill in the self-distillation part')
     return parent_parser
 
 

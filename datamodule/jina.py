@@ -34,8 +34,7 @@ class JinaDataset(Dataset):
         self.training_stage = training_stage
         self.expand_factor = 1
         if self.training_stage == 0:
-            # self.expand_factor = len(self.data[0]['content']['crossfile_array'])
-            self.expand_factor = 10
+            self.expand_factor = len(self.data[0]['content']['crossfile_array'])
 
     def __len__(self):
 
@@ -99,6 +98,19 @@ class JinaDataset(Dataset):
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
-            item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+            # for KL-div training
+            all_cfc = '\n'.join(self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens])
+            all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            teacher_input_ids = torch.cat([
+                fim_prefix_id,
+                left_context_ids,
+                fim_suffix_id,
+                right_context_ids,
+                self.code_tokenizer('# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                all_cfc_ids,
+                fim_middle_id,
+                target_ids]).to(torch.long)
+
+            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
 
         return item

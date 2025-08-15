@@ -12,7 +12,7 @@ from .unixcoder import (
     CodeCfcDataset,
     CodeAstCfcDataset,
 )
-from .graphcodebert import DfgDataset
+# from .graphcodebert import DfgDataset
 from .jina import JinaDataset
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,16 @@ class LlavaCodeDataCollator:
             padding_side='right'
         )
         batch['structure_ids'] = structure_batch['input_ids']
+
+        if 'teacher_input_ids' in features[0].keys():
+            teacher_input_ids = [{'input_ids': f['teacher_input_ids']} for f in features]
+            teacher_batch = self.code_tokenizer.pad(
+                teacher_input_ids,
+                padding=True,
+                return_tensors='pt',
+                padding_side='right'
+            )
+            batch['teacher_input_ids'] = teacher_batch['input_ids']
 
         if 'num_structure_tokens' in features[0].keys():
             batch['num_structure_tokens'] = torch.tensor([f['num_structure_tokens'] for f in features], dtype=torch.int)
@@ -105,15 +115,18 @@ class LlavaCodeDataModule(LightningDataModule):
         elif self.data_prefix == 'code_cfc':
             # return CodeCfcDataset(
             #     raw_data,
+            #     training_stage=self.training_stage,
             #     code_tokenizer=self.code_tokenizer,
             #     ast_tokenizer=self.structure_tokenizer,
+            #     fim_tokens_ids=self.fim_tokens_ids,
             #     structure_token_id=self.structure_token_id,
+            #     num_structure_tokens=self.num_structure_tokens,
             #     max_structure_length=512)
             return JinaDataset(
                 raw_data,
                 training_stage=self.training_stage,
                 code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.structure_tokenizer,
+                structure_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
@@ -147,7 +160,9 @@ class LlavaCodeDataModule(LightningDataModule):
         logger.info('Loading data...')
 
         train_orig_data = load_from_disk(self.train_datadir)
+        # train_orig_data = train_orig_data.select(range(10000))  # for debugging
         valid_orig_data = load_from_disk(self.valid_datadir)
+        # valid_orig_data = valid_orig_data.select(range(100))  # for debugging
 
         self.train_data = self.get_dataset(train_orig_data)
         self.valid_data = self.get_dataset(valid_orig_data)

@@ -3,6 +3,7 @@ from transformers import (
     RobertaForSequenceClassification,
     AutoModel,
     AutoConfig,
+    AutoTokenizer,
     PretrainedConfig,
     GenerationMixin,
     CONFIG_MAPPING
@@ -27,13 +28,53 @@ import torch.nn as nn
 from torch.optim import AdamW
 import torch.nn.functional as F
 import math
+import gc
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
-from .modeling_unixcoder import UniXcoder
+from .modeling_unixcoder import UniXcoderEncoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
+from datamodule import STRUCTURE_TOKEN, FIMMAP
+
+
+def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, temperature, distill_topk=None):
+
+    # make sure the teacher_logits and student_logits have the same shape
+    loss_fct = nn.KLDivLoss(reduction="batchmean")
+    _, _, vocab_size = student_logits.shape
+
+    # only compute loss in the completion part, not prompt
+    student_mask = (student_labels != -100).unsqueeze(-1).expand_as(student_logits)  # batch_size, num_tokens, vocab_size
+    student_logits_selected = torch.masked_select(student_logits, student_mask).view(-1, vocab_size)
+
+    teacher_mask = (teacher_labels != -100).unsqueeze(-1).expand_as(teacher_logits)
+    teacher_logits_selected = torch.masked_select(teacher_logits, teacher_mask).view(-1, vocab_size)
+
+    if distill_topk is not None:
+        _, topk_teacher_indices = torch.topk(teacher_logits_selected, k=distill_topk, dim=-1)
+
+        teacher_logits_selected = torch.gather(teacher_logits_selected, 1, topk_teacher_indices)
+        student_logits_selected = torch.gather(student_logits_selected, 1, topk_teacher_indices)
+
+    assert teacher_logits_selected.shape == student_logits_selected.shape, (f"The shape of teacher logits is {teacher_logits_selected.shape}, while that of student is {student_logits_selected.shape}")
+
+    kl_loss = loss_fct(
+        F.log_softmax(student_logits_selected / temperature, dim=-1),
+        F.softmax(teacher_logits_selected / temperature, dim=-1),
+    ) * temperature ** 2
+
+    return kl_loss
+
+
+def calculate_accuracy(logits, labels):
+    # bs = 1
+    shift_logits = logits[:, :-1, :]
+    labels = labels[:, 1:]
+    predictions = torch.argmax(shift_logits, dim=-1)
+    correct = (predictions == labels).float()
+    return correct.mean().item()
 
 
 class LlavaCodeConfig(PretrainedConfig):
@@ -111,6 +152,31 @@ class LlavaCodeConfig(PretrainedConfig):
         self.pad_token_id = pad_token_id  # has to go after super() init
 
 
+# class LlavaCodeMultiModalProjector(nn.Module):
+#     def __init__(self, config: LlavaCodeConfig):
+#         super().__init__()
+#         self.linear_1 = nn.Linear(
+#             config.structure_config.hidden_size,
+#             config.text_config.hidden_size * 4,
+#             bias=config.multimodal_projector_bias,
+#         )
+#         self.act = ACT2FN[config.projector_hidden_act]
+#         self.linear_2 = nn.Linear(
+#             config.text_config.hidden_size * 4, config.text_config.hidden_size * 4, bias=config.multimodal_projector_bias
+#         )
+#         self.linear_3 = nn.Linear(
+#             config.text_config.hidden_size * 4, config.text_config.hidden_size, bias=config.multimodal_projector_bias
+#         )
+
+#     def forward(self, structure_features):
+#         hidden_states = self.linear_1(structure_features)
+#         hidden_states = self.act(hidden_states)
+#         hidden_states = self.linear_2(hidden_states)
+#         hidden_states = self.act(hidden_states)
+#         hidden_states = self.linear_3(hidden_states)
+#         return hidden_states
+
+
 class LlavaCodeMultiModalProjector(nn.Module):
     def __init__(self, config: LlavaCodeConfig):
         super().__init__()
@@ -123,10 +189,13 @@ class LlavaCodeMultiModalProjector(nn.Module):
         self.linear_2 = nn.Linear(
             config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
         )
+        self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
+        # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
 
-    def forward(self, image_features):
-        hidden_states = self.linear_1(image_features)
+    def forward(self, structure_features):
+        hidden_states = self.linear_1(structure_features)
         hidden_states = self.act(hidden_states)
+        hidden_states = self.ln_1(hidden_states)
         hidden_states = self.linear_2(hidden_states)
         return hidden_states
 
@@ -195,7 +264,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
     def __init__(self, config: LlavaCodeConfig):
         super().__init__(config)
         if 'unixcoder' in self.config.structure_config.model_id.lower():
-            self.structure_model = UniXcoder(self.config.structure_config.model_id)
+            # self.structure_model = UniXcoder(self.config.structure_config.model_id)
+            self.structure_model = UniXcoderEncoder(
+                AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
         # elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
         #     self.structure_model = EnhancedGNNEncoder(
         #         hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
@@ -209,12 +280,22 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
         self.multi_modal_projector = LlavaCodeMultiModalProjector(config)
+        print('before post_init', self.multi_modal_projector.linear_1.weight.data.norm(2))
         embed_std = 1 / math.sqrt(config.text_config.hidden_size)
 
         self.vocab_size = config.text_config.vocab_size
         self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
+
+        if 'qwen' in self.config.text_config.model_id.lower():
+            self.fim_tokens = FIMMAP['qwen2.5']
+        elif 'starcoder' in self.config.text_config.model_id.lower():
+            self.fim_tokens = FIMMAP['starcoder']
+        else:
+            raise NotImplementedError(f'No such model in FIM mapping: {self.config.text_config.model_id}')
+
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
+        print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
@@ -263,9 +344,17 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             # others fully consist of padding
             structure_embedding = structure_embedding[flat_mask]
 
+        # from datetime import datetime
+        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        # torch.save(structure_embedding, f"test_tensors/values_{timestamp}.pt")
+
         # structure_embedding = torch.nn.functional.normalize(structure_embedding, p=2, dim=-1)  # normalize the embedding
         # structure_embedding = torch.randn_like(structure_embedding, dtype=torch.float)  # sanity check with random inputs
         structure_features = self.multi_modal_projector(structure_embedding)
+        # import random
+        # roll = random.randint(1, 1000)
+        # if roll == 1:
+        #     print("structure features shape", structure_features.shape)
         return structure_features
 
     @can_return_tuple
@@ -273,6 +362,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         structure_values: torch.LongTensor = None,
+        structure_features: torch.FloatTensor = None,
         structure_attn_mask: torch.Tensor = None,
         structure_pos_idx: torch.LongTensor = None,
         num_structure_tokens: torch.IntTensor = None,
@@ -290,12 +380,15 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         r"""
         """
         # checking if cache is already in use (use_cache=True and iter > 1)
-        if isinstance(past_key_values, list):
+        # this is kostyl for starcoder
+        if past_key_values is None:
+            using_cache = False
+        elif isinstance(past_key_values, list):
             using_cache = True
         elif isinstance(past_key_values, DynamicCache):
             using_cache = bool(past_key_values.key_cache)
         else:
-            raise ValueError(f'Unknown past_key_values instance.')
+            raise ValueError('Unknown past_key_values instance')
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -309,24 +402,45 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids)  # from language model only
 
-        structure_features = None
-        if structure_values is not None and not using_cache:
+        if structure_values is not None and structure_features is None and not using_cache:
             structure_features = self.get_structure_features(
                 structure_values, num_structure_tokens, structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
+            structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            # import random
+            # roll = random.randint(1, 1000)
+            # if roll > 0:
+            #     print("structure features", structure_features.shape)
+            # debug and testing
+            # structure_values = structure_values.reshape(-1, 2048)
+            # structure_features = self.language_model.wte(structure_values)
+            # with torch.no_grad():
+            #     outputs = self.language_model(inputs_embeds=structure_features, output_hidden_states=True)
+            #     hidden_states = outputs.hidden_states[-1][:, -1, :]
+            # new_structure_features = []
+            # for i in range(len(structure_features)):
+            #     structure_features_row = structure_features[i][structure_values[i] != 0]
+            #     new_structure_features.append(structure_features_row.mean(dim=0))
+            # structure_features = torch.cat(new_structure_features)
+            # structure_features = hidden_states
 
+        if structure_features is not None:
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
             assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), \
                 f'Mask does not correspond to the number of structure features: {inputs_embeds[special_structure_mask].numel()} != {structure_features.numel()}'
-            structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
+
+            # from datetime import datetime
+            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            # torch.save(structure_features, f"test_tensors/tensor_{timestamp}.pt")
+            # print('inside', structure_features.shape)
 
         outputs = self.language_model(
             # input_ids: Optional[torch.Tensor] = None,
             attention_mask=attention_mask,
             # token_type_ids: Optional[torch.Tensor] = None,
             position_ids=position_ids,
-            past_key_values=past_key_values if using_cache else None,  # gpt-related kostyl
+            past_key_values=past_key_values if using_cache else None,
             # head_mask: Optional[torch.Tensor] = None,
             inputs_embeds=inputs_embeds,
             # encoder_hidden_states: Optional[torch.Tensor] = None,
@@ -404,7 +518,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.vocab_size = self.config.text_config.vocab_size
         self.language_model.resize_token_embeddings(self.vocab_size)
         self.pad_token_id = config.pad_token_id
-
+        self.tokenizer = AutoTokenizer.from_pretrained(config.text_config.model_id, use_fast=False)
+        self.tokenizer.add_tokens([STRUCTURE_TOKEN])
+        if self.tokenizer.pad_token_id is None:  # case with starcoder
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        print(f'Structure token: {STRUCTURE_TOKEN}')
         self.post_init()
 
     def set_trainer_args(self, trainer_args):
@@ -412,7 +530,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
     def setup(self, stage):
         if stage == 'fit':
-            # Hyperparamters and Configuration
+            # Hyperparameters and Configuration
             self.num_nodes = self.trainer_args.num_nodes
             self.dropout_p = self.trainer_args.dropout_p
             self.functional_dropout = self.trainer_args.functional_dropout
@@ -437,16 +555,22 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             self.world_size = self.trainer_args.devices * self.num_nodes
 
             # Loss Configuration
-            if self.trainer_args.loss == 'mse':
-                self.loss = nn.MSELoss(reduction='mean')
-            elif self.trainer_args.loss == 'mle':
+            if self.trainer_args.loss == 'mle':
                 self.loss = nn.CrossEntropyLoss()
-            elif self.trainer_args.loss == 'cosine':
-                self.loss = lambda x, y: (1 - F.cosine_similarity(x, y)).mean()
+            # elif self.trainer_args.loss == 'mse':
+            #     self.loss = nn.MSELoss(reduction='mean')
+            # elif self.trainer_args.loss == 'cosine':
+            #     self.loss = lambda x, y: (1 - F.cosine_similarity(x, y)).mean()
+            else:
+                raise ValueError(f'Invalid loss: {self.trainer_args.loss}')
+            self.alpha_kl = self.trainer_args.alpha_kl
+            self.kl_temperature = self.trainer_args.kl_temperature
+            self.distill_topk = self.trainer_args.distill_topk
 
             self.training_stage = self.trainer_args.training_stage
 
-            self.validation_step_outputs = []
+            self.validation_step_loss = []
+            self.validation_step_loss_kl = []
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -484,6 +608,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self,
         input_ids: torch.LongTensor = None,
         structure_values: torch.LongTensor = None,
+        structure_features: torch.FloatTensor = None,
         structure_attn_mask: torch.Tensor = None,
         structure_pos_idx: torch.LongTensor = None,
         num_structure_tokens: torch.IntTensor = None,
@@ -514,6 +639,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         outputs = self.model(
             input_ids,
             structure_values=structure_values,
+            structure_features=structure_features,
             structure_attn_mask=structure_attn_mask,
             structure_pos_idx=structure_pos_idx,
             num_structure_tokens=num_structure_tokens,
@@ -573,59 +699,125 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         return model_inputs
 
-    def get_inputs_and_labels(self, token_ids):
+    # def get_inputs_and_labels(self, token_ids, mask_prob=None):
+    #     inp_tensor = token_ids[:, :-1].clone()
+
+    #     lbl_tensor = token_ids[:, 1:].clone()
+    #     lbl_tensor[lbl_tensor == self.pad_token_id] = -100
+
+    #     attention_mask = inp_tensor.ne(self.pad_token_id)
+
+    #     if mask_prob is not None:
+
+    #         batch_size, seq_len = inp_tensor.shape
+
+    #         start_pos = (inp_tensor == 151659).float().argmax(dim=1)
+    #         end_pos = (inp_tensor == 151660).float().argmax(dim=1)
+
+    #         position_ids = torch.arange(seq_len, device=inp_tensor.device).unsqueeze(0)
+    #         in_mask_region = (position_ids > start_pos.unsqueeze(1)) & (position_ids < end_pos.unsqueeze(1))
+    #         random_mask = torch.bernoulli(torch.full_like(inp_tensor, mask_prob, dtype=torch.float)).bool()
+    #         final_mask = in_mask_region & random_mask
+
+    #         # Loss masking
+    #         lbl_tensor = torch.where(final_mask, torch.full_like(lbl_tensor, -100), lbl_tensor)
+
+    #         # Attention mask — exclude pads AND masked region
+    #         attention_mask = (~final_mask) & inp_tensor.ne(self.pad_token_id)
+
+    #     return inp_tensor, lbl_tensor, attention_mask
+
+    def get_inputs_and_labels_fim(self, token_ids):
+        """Prepares inputs and labels for Fill-in-the-Middle (FIM) training.
+
+        Args:
+            token_ids: Tensor of shape (batch, seq_len) with the rearranged FIM sequence.
+
+        Returns:
+            inp_tensor: input ids for model
+            lbl_tensor: labels with -100 where no loss should be computed
+            attention_mask: mask for padding tokens
+        """
+        # Standard causal LM shift
         inp_tensor = token_ids[:, :-1].clone()
-
         lbl_tensor = token_ids[:, 1:].clone()
-        lbl_tensor[lbl_tensor[:, :] == self.pad_token_id] = -100
 
-        attention_mask = torch.ones_like(inp_tensor)
-        attention_mask = attention_mask.masked_fill(inp_tensor.eq(self.pad_token_id), 0.0).type(torch.bool)
+        fim_middle_id = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)[2]
+
+        # Find first occurrence of <|fim_middle|> in each sequence
+        fim_middle_mask = (token_ids == fim_middle_id)
+        # Convert boolean mask to index positions
+        # argmax works because <|fim_middle|> appears exactly once
+        middle_pos = fim_middle_mask.float().argmax(dim=1)
+
+        # Build a position index tensor for broadcasting
+        seq_len = lbl_tensor.size(1)
+        pos_ids = torch.arange(seq_len, device=lbl_tensor.device).unsqueeze(0)  # [1, seq_len]
+
+        # Mask: keep tokens where position >= middle_pos
+        keep_mask = pos_ids >= middle_pos.unsqueeze(1)
+
+        # Apply mask and pad masking
+        lbl_tensor = torch.where(keep_mask, lbl_tensor, torch.full_like(lbl_tensor, -100))
+        lbl_tensor[lbl_tensor == self.pad_token_id] = -100
+
+        attention_mask = inp_tensor.ne(self.pad_token_id)
 
         return inp_tensor, lbl_tensor, attention_mask
 
     def training_step(self, batch, batch_idx):
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
-        input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
-        if self.training_stage == 0:
+
+        input_ids, labels, attention_mask = self.get_inputs_and_labels_fim(token_ids)
+
+        # import random
+        # roll = random.randint(1, 500)
+        # if roll < 1000:
+        #     print("input_ids", input_ids.shape)
+        #     print("structure_ids", structure_ids.shape)
+        #     print("pad token_id", self.pad_token_id)
+        #     print('attn', attention_mask)
+        assert structure_attn_mask is None and structure_pos_idx is None
+        logits = self(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            structure_values=structure_ids,
+            structure_attn_mask=structure_attn_mask,
+            structure_pos_idx=structure_pos_idx,
+            num_structure_tokens=num_structure_tokens).logits
+        loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
+        self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
+
+        if self.alpha_kl is not None and self.alpha_kl > 0.0:
+            assert self.training_stage > 0
             with torch.no_grad():
-                token_embeddings = self.language_model.wte(input_ids)
-                sentence_embeddings = (token_embeddings * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
-            structure_features = self.model.get_structure_features(structure_ids)
+                self.eval()
+                teacher_input_ids, teacher_labels, teacher_attention_mask = self.get_inputs_and_labels_fim(batch['teacher_input_ids'])
+                teacher_logits = self(
+                    input_ids=teacher_input_ids,
+                    attention_mask=teacher_attention_mask).logits
+                self.train()
 
-            loss = self.loss(structure_features, sentence_embeddings)
-            self.log("Train/Loss/MSE", loss, sync_dist=True, on_step=True, prog_bar=True)
+                kl_loss = get_kl_loss(
+                    teacher_logits=teacher_logits,
+                    teacher_labels=teacher_labels,
+                    student_logits=logits,
+                    student_labels=labels,
+                    temperature=self.kl_temperature,
+                )
+                loss += self.alpha_kl * kl_loss
 
-        else:
-            logits = self(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                structure_values=structure_ids,
-                structure_attn_mask=structure_attn_mask,
-                structure_pos_idx=structure_pos_idx,
-                num_structure_tokens=num_structure_tokens).logits
-
-            loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-            self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
+            self.log("Train/Loss/KL", kl_loss, sync_dist=True, on_step=True, prog_bar=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
-        input_ids, labels, attention_mask = self.get_inputs_and_labels(token_ids)
+        input_ids, labels, attention_mask = self.get_inputs_and_labels_fim(token_ids)
 
-        if self.training_stage == 0:
-
-            with torch.no_grad():
-                token_embeddings = self.language_model.wte(input_ids)
-                sentence_embeddings = (token_embeddings * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
-                structure_features = self.model.get_structure_features(structure_ids)
-
-            loss = self.loss(structure_features, sentence_embeddings)
-        else:
-
+        with torch.no_grad():
             logits = self(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -634,16 +826,67 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_pos_idx=structure_pos_idx,
                 num_structure_tokens=num_structure_tokens).logits
             loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
+            self.validation_step_loss.append(loss)
 
-        self.validation_step_outputs.append(loss)
+            # import random
+            # roll = random.randint(1, 1000)
+            # if roll == 1:
+            #     print('logits shape', logits.shape)
+            #     print('vocabs', self.vocab_size, len(self.tokenizer))
+
+            if self.alpha_kl is not None and self.alpha_kl > 0.0:
+                assert self.training_stage > 0
+                teacher_input_ids, teacher_labels, teacher_attention_mask = self.get_inputs_and_labels_fim(batch['teacher_input_ids'])
+                teacher_logits = self(
+                    input_ids=teacher_input_ids,
+                    attention_mask=teacher_attention_mask).logits
+
+                kl_loss = get_kl_loss(
+                    teacher_logits=teacher_logits,
+                    teacher_labels=teacher_labels,
+                    student_logits=logits,
+                    student_labels=labels,
+                    temperature=self.kl_temperature,
+                )
+                loss += self.alpha_kl * kl_loss
+                self.validation_step_loss_kl.append(kl_loss)
+
         return loss
 
     def on_validation_epoch_end(self):
-        val_loss = torch.stack(self.validation_step_outputs).mean()
+
+        # cleaning up memory
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        val_loss = torch.stack(self.validation_step_loss).mean()
         perplexity = torch.exp(val_loss)
         self.log("Valid/Loss/MLE", val_loss, sync_dist=True, on_epoch=True, prog_bar=True)
         self.log("Valid/Loss/Perplexity", perplexity, sync_dist=True, on_epoch=True, prog_bar=True)
-        self.validation_step_outputs.clear()  # free memory
+        self.validation_step_loss.clear()  # free memory
+        if self.alpha_kl is not None and self.alpha_kl > 0.0:
+            val_loss_kl = torch.tensor(self.validation_step_loss_kl).mean()
+            self.log("Valid/Loss/KL", val_loss_kl, sync_dist=True, on_epoch=True, prog_bar=True)
+            self.validation_step_loss_kl.clear()  # free memory
+
+    def on_after_backward(self):
+        with torch.no_grad():
+            # Compute gradient norm (L2 norm)
+            total_norm = 0.0
+            for p in self.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+
+            # Log gradient norm
+            self.log('grad_norm', total_norm, on_step=True, on_epoch=False, prog_bar=True)
+
+            total_norm = 0.0
+            for p in self.parameters():
+                if p.grad is not None:
+                    total_norm += p.data.norm(2).item() ** 2
+            self.log('weight_norm', total_norm ** 0.5, on_step=True)
 
     def configure_optimizers(self):
         decay_parameters = get_parameter_names(self.model, [torch.nn.LayerNorm])

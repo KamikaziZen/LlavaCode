@@ -7,6 +7,7 @@ from transformers import (
     RobertaTokenizer,
 )
 
+import torch
 import lightning.pytorch as pl
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -18,7 +19,7 @@ import logging
 
 from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
-from datamodule import LlavaCodeDataModule, STRUCTURE_TOKEN
+from datamodule import LlavaCodeDataModule, STRUCTURE_TOKEN, FIMMAP
 from pl_logger import ClearMLLogger
 
 load_dotenv()
@@ -90,6 +91,8 @@ if __name__ == "__main__":
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
     structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
+    structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
+
     # structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
     structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
@@ -106,13 +109,16 @@ if __name__ == "__main__":
             args.model_checkpoint, config=configuration)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
+    # if args.projector_checkpoint:
+    #     print('Loading projection weighs')
+    #     model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
 
-    if 'unixcoder' in args.structure_model_id.lower():
-        structure_tokenizer = model.model.structure_model.tokenizer
-    elif 'graphcodebert' in args.structure_model_id.lower():
-        structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
-    elif 'jina' in args.structure_model_id.lower():
-        structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
+    # if 'unixcoder' in args.structure_model_id.lower():
+    #     structure_tokenizer = model.model.structure_model.tokenizer
+    # elif 'graphcodebert' in args.structure_model_id.lower():
+    #     structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
+    # elif 'jina' in args.structure_model_id.lower():
+    #     structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
 
     # Stage 0: only projection is trained on mse loss
     # Stage 1: only projection is trained on entropy loss
@@ -121,7 +127,7 @@ if __name__ == "__main__":
     for p in model.model.structure_model.parameters():
         p.requires_grad = False
 
-    if args.training_stage == 0 or args.training_stage == 1:
+    if args.training_stage == 0 or args.training_stage == 1 or args.training_stage == 2:
         for p in model.model.language_model.parameters():
             p.requires_grad = False
 
@@ -130,9 +136,14 @@ if __name__ == "__main__":
         all_params += param.numel()
         trainable_params += param.numel() * param.requires_grad
 
-    logger.info(f"""Trainable parameters: {trainable_params},
-                All Parameters: {all_params},
-                Percentage: {trainable_params / all_params * 100 :.2f}%""")
+    print(f"""Trainable parameters: {trainable_params},
+              All Parameters: {all_params},
+              Percentage: {trainable_params / all_params * 100 :.2f}%""")
+
+    total_norm = 0.0
+    for p in model.model.multi_modal_projector.parameters():
+        total_norm += p.data.norm(2).item() ** 2
+    print(f"Total norm of projector weights: {total_norm}")
 
     data = LlavaCodeDataModule(
         args.data_prefix,
@@ -140,7 +151,7 @@ if __name__ == "__main__":
         args.valid_datadir,
         args.train_batch_size,
         args.valid_batch_size,
-        fim_tokens=['<fim_prefix>', '<fim_suffix>', '<fim_middle>'],  # TODO: create a constant mapping
+        fim_tokens=model.model.fim_tokens,
         training_stage=args.training_stage,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
@@ -186,11 +197,14 @@ if __name__ == "__main__":
         'gradient_clip_val': args.gradient_clip_val,
         'gradient_clip_algorithm': 'norm',
         'default_root_dir': args.default_root_dir,
+        # 'limit_val_batches': 0.0
     }
     trainer = pl.Trainer(**custom_trainer_kwargs)
     logger.warning(f'{trainer.__dict__=}')
 
     model.set_trainer_args(args)
+
+    # trainer.evaluate()
 
     trainer.fit(model, data)
 
