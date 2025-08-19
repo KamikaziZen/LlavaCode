@@ -74,17 +74,18 @@ def prepare_prompt(args,
         structure_ids = []
         for cfc in chunks:
             cfc_tokens = structure_tokenizer.tokenize(cfc)
-            cfc_tokens = cfc_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
-            cfc_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
-                + cfc_tokens + [structure_tokenizer.sep_token]
+            cfc_tokens = cfc_tokens[:args.max_structure_length - 4]
+            # cfc_tokens = cfc_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
+            # cfc_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
+            #     + cfc_tokens + [structure_tokenizer.sep_token]
             chunk_ids = structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
             structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        # prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
-        prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
+        # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
@@ -186,6 +187,7 @@ def prepare_prompt(args,
             prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
         elif 'qwen' in args.text_model_id.lower():
             prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
+            # prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
 
         return prompt, None, None
 
