@@ -3,7 +3,45 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import RobertaTokenizer, RobertaModel, RobertaConfig
+
+
+class UniXcoderEncoder(nn.Module):
+    """Wrapper Module for encoding inputs with UniXCoder model.
+    Supports CLS pooling (default) and mean pooling.
+    """
+    def __init__(self, model, config, pooling="mean", normalize=True):
+        super().__init__()
+        self.model = model
+        self.config = config
+        assert pooling in ["cls", "mean"], "pooling must be 'cls' or 'mean'"
+        self.pooling = pooling
+        self.normalize = normalize
+
+    def forward(self, input_ids, pooling=None):
+        if pooling is None:
+            pooling = self.pooling
+
+        attn_mask = input_ids.ne(self.config.pad_token_id)
+        out = self.model(input_ids=input_ids, attention_mask=attn_mask)
+        hidden = out.last_hidden_state  # [batch, seq_len, hidden_dim]
+
+        if pooling == "cls":
+            embeddings = hidden[:, 0, :]  # first token hidden space
+        elif pooling == "mean":
+            # mask out pad tokens before mean
+            masked_hidden = hidden * attn_mask.unsqueeze(-1)
+            sum_hidden = masked_hidden.sum(dim=1)
+            lengths = attn_mask.sum(dim=1, keepdim=True)
+            embeddings = sum_hidden / lengths.clamp(min=1e-9)
+        else:
+            raise ValueError(f"Unknown pooling: {pooling}")
+
+        if self.normalize:
+            embeddings = F.normalize(embeddings, p=2, dim=-1)
+
+        return None, embeddings
 
 
 class UniXcoder(nn.Module):
@@ -26,7 +64,7 @@ class UniXcoder(nn.Module):
         self.lm_head.weight = self.model.embeddings.word_embeddings.weight
         self.lsm = nn.LogSoftmax(dim=-1)
 
-        self.tokenizer.add_tokens(["<mask0>"],special_tokens=True)
+        self.tokenizer.add_tokens(["<mask0>"], special_tokens=True)
 
     def tokenize(self, inputs, mode="<encoder-only>", max_length=512, padding=False):
         """Convert string to token ids
@@ -81,7 +119,10 @@ class UniXcoder(nn.Module):
         """ Obtain token embeddings and sentence embeddings """
         mask = source_ids.ne(self.config.pad_token_id)
         token_embeddings = self.model(source_ids, attention_mask=mask.unsqueeze(1) * mask.unsqueeze(2))[0]
-        sentence_embeddings = (token_embeddings * mask.unsqueeze(-1)).sum(1) / mask.sum(-1).unsqueeze(-1)
+        # print('mask', mask.unsqueeze(1) * mask.unsqueeze(2))
+        # print('mask shape', mask.unsqueeze(1) * mask.unsqueeze(2))
+        # sentence_embeddings = (token_embeddings * mask.unsqueeze(-1)).sum(1) / mask.sum(-1).unsqueeze(-1)  # obtaining sentence embedding from pooling
+        sentence_embeddings = token_embeddings[:, 0, :]  # obtaining sentence embedding from cls token
         return token_embeddings, sentence_embeddings
 
     def generate(self, source_ids, decoder_only=True, eos_id=None, beam_size=5, max_length=64):
@@ -100,7 +141,7 @@ class UniXcoder(nn.Module):
         device = source_ids.device
 
         # Decoding using beam search
-        preds = []       
+        preds = []
         zero = torch.LongTensor(1).fill_(0).to(device)   
         source_len = list(source_ids.ne(1).sum(-1).cpu().numpy())
         length = source_ids.size(-1)
