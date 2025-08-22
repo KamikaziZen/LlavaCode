@@ -36,13 +36,14 @@ from typing import List, Optional, Tuple, Union
 from .modeling_unixcoder import UniXcoderEncoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
-from datamodule import STRUCTURE_TOKEN, FIMMAP
+from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 
 
 def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, temperature, distill_topk=None):
 
     # make sure the teacher_logits and student_logits have the same shape
-    loss_fct = nn.KLDivLoss(reduction="batchmean")
+    # loss_fct = nn.KLDivLoss(reduction="batchmean")
+    loss_fct = nn.KLDivLoss(reduction="sum")
     _, _, vocab_size = student_logits.shape
 
     # only compute loss in the completion part, not prompt
@@ -63,7 +64,8 @@ def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, 
     kl_loss = loss_fct(
         F.log_softmax(student_logits_selected / temperature, dim=-1),
         F.softmax(teacher_logits_selected / temperature, dim=-1),
-    ) * temperature ** 2
+    ) * (temperature ** 2)
+    kl_loss = kl_loss / student_logits_selected.size(0)  # average per valid token
 
     return kl_loss
 
@@ -190,13 +192,14 @@ class LlavaCodeMultiModalProjector(nn.Module):
             config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
         )
         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
-        # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
+        self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
 
     def forward(self, structure_features):
         hidden_states = self.linear_1(structure_features)
         hidden_states = self.act(hidden_states)
         hidden_states = self.ln_1(hidden_states)
         hidden_states = self.linear_2(hidden_states)
+        hidden_states = self.ln_2(hidden_states)
         return hidden_states
 
 
@@ -334,8 +337,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             raise ValueError('Incorrect inputs to get_structure_features()')
 
         if nums_structure_tokens is not None:
-            # this is not triggered during the stage 0 training, since there are no structure tokens in the input_ids (nums_structure_tokens is None)
+            # this shouldn't be triggered during training_stage == 0
             # nums_structure_tokens: number of structure tokens for each sample in a batch
+            assert False
             max_num = nums_structure_tokens.max()
             row_ids = torch.arange(max_num).expand(len(nums_structure_tokens), max_num).to(nums_structure_tokens.device)
             mask = row_ids < nums_structure_tokens.unsqueeze(1)
@@ -799,14 +803,14 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     attention_mask=teacher_attention_mask).logits
                 self.train()
 
-                kl_loss = get_kl_loss(
-                    teacher_logits=teacher_logits,
-                    teacher_labels=teacher_labels,
-                    student_logits=logits,
-                    student_labels=labels,
-                    temperature=self.kl_temperature,
-                )
-                loss += self.alpha_kl * kl_loss
+            kl_loss = get_kl_loss(
+                teacher_logits=teacher_logits,
+                teacher_labels=teacher_labels,
+                student_logits=logits,
+                student_labels=labels,
+                temperature=self.kl_temperature,
+            )
+            loss += self.alpha_kl * kl_loss
 
             self.log("Train/Loss/KL", kl_loss, sync_dist=True, on_step=True, prog_bar=True)
 
@@ -826,7 +830,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_pos_idx=structure_pos_idx,
                 num_structure_tokens=num_structure_tokens).logits
             loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-            self.validation_step_loss.append(loss)
 
             # import random
             # roll = random.randint(1, 1000)
@@ -849,8 +852,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     temperature=self.kl_temperature,
                 )
                 loss += self.alpha_kl * kl_loss
-                self.validation_step_loss_kl.append(kl_loss)
+                # self.validation_step_loss_kl.append(loss)
 
+        self.validation_step_loss.append(loss)
         return loss
 
     def on_validation_epoch_end(self):
@@ -864,10 +868,10 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.log("Valid/Loss/MLE", val_loss, sync_dist=True, on_epoch=True, prog_bar=True)
         self.log("Valid/Loss/Perplexity", perplexity, sync_dist=True, on_epoch=True, prog_bar=True)
         self.validation_step_loss.clear()  # free memory
-        if self.alpha_kl is not None and self.alpha_kl > 0.0:
-            val_loss_kl = torch.tensor(self.validation_step_loss_kl).mean()
-            self.log("Valid/Loss/KL", val_loss_kl, sync_dist=True, on_epoch=True, prog_bar=True)
-            self.validation_step_loss_kl.clear()  # free memory
+        # if self.alpha_kl is not None and self.alpha_kl > 0.0:
+            # val_loss_kl = torch.tensor(self.validation_step_loss_kl).mean()
+            # self.log("Valid/Loss/KL", val_loss_kl, sync_dist=True, on_epoch=True, prog_bar=True)
+            # self.validation_step_loss_kl.clear()  # free memory
 
     def on_after_backward(self):
         with torch.no_grad():

@@ -1,5 +1,5 @@
 from .datamodule import LlavaCodeDataModule
-from .const import STRUCTURE_TOKEN, FIMMAP
+from .const import STRUCTURE_TOKEN
 
 __all__ = [
     "LlavaCodeDataModule",

@@ -46,3 +46,19 @@ PARAPHRASE_CUES = [
     "# Implementation above is matched by the one below",
     "# Another representation of the above algorithm appears below",
 ]
+
+# PARAPHRASE_CUES = [
+#     "Background: [X] implements the same functionality as [D]",
+#     "Background: [X] Can you re-express the above code in your own way? [D]",
+#     "[X] Please provide a reinterpretation of the preceding code snippet. [D]",
+#     "These two code fragments are equivalent in essence: (1) [X] (2) [D]",
+#     "Background: [X] is a reimplementation of what? [D]",
+#     "[X] Could you give me a different version of the code above? [D]",
+#     "In other words, background: [X] is just another way of writing: [D]",
+#     "You’re achieving the same result whether you write background: [X] or [D]",
+#     "[X] After unpacking the ideas in the code above, we get: [D]",
+#     "[X] Please offer a restatement of the code snippet I’ve just read. [D]",
+#     "Background: [X], which is functionally equivalent to: [D]",
+#     "Strip away the syntax, and you’ll find [X] is simply another rendition of: [D]",
+#     "The essence of background: [X] is captured again in the following code: [D]",
+# ]

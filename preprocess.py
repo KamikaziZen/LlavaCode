@@ -6,7 +6,7 @@ from tree_sitter import Language, Parser
 
 
 # Load tree-sitter parser
-parsers={}              
+parsers = {}
 # for lang in ['python','ruby','java','go','javascript','php','c','cpp','c_sharp']:
 for lang in ['python']:
     try:

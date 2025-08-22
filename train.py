@@ -19,7 +19,8 @@ import logging
 
 from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
-from datamodule import LlavaCodeDataModule, STRUCTURE_TOKEN, FIMMAP
+from datamodule import LlavaCodeDataModule
+from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 from pl_logger import ClearMLLogger
 
 load_dotenv()
@@ -85,6 +86,8 @@ if __name__ == "__main__":
     # User gives validation check interval in terms of number of steps, PL requires in terms of batches
     args.val_check_interval *= args.accumulate_grad_batches
 
+    print('args:', args)
+
     code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
     code_tokenizer.add_tokens([STRUCTURE_TOKEN])
     if code_tokenizer.pad_token_id is None:
@@ -93,7 +96,6 @@ if __name__ == "__main__":
 
     structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
 
-    # structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
     structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
@@ -120,8 +122,8 @@ if __name__ == "__main__":
     # elif 'jina' in args.structure_model_id.lower():
     #     structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
 
-    # Stage 0: only projection is trained on mse loss
-    # Stage 1: only projection is trained on entropy loss
+    # Stage 0: only projection is trained on entropy loss
+    # Stage 1: only projection is trained on entropy loss and KL loss
     # Stage 2: projection and llm are trained on entropy loss
     # structure model weights are always frozen
     for p in model.model.structure_model.parameters():
@@ -130,6 +132,10 @@ if __name__ == "__main__":
     if args.training_stage == 0 or args.training_stage == 1 or args.training_stage == 2:
         for p in model.model.language_model.parameters():
             p.requires_grad = False
+    if args.training_stage == 0:
+        for name, p in model.named_parameters():
+            if name.startswith('model.language_model.layers.0.'):
+                p.requires_grad = True
 
     trainable_params, all_params = 0, 0
     for name, param in model.named_parameters():
@@ -180,6 +186,7 @@ if __name__ == "__main__":
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
+        'accelerator': "gpu",
         'callbacks': callbacks,
         'logger': [clearml_logger, csv_logger],
         'strategy': DeepSpeedStrategy(config=args.ds_config) \

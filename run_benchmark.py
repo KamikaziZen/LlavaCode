@@ -15,7 +15,7 @@ from tqdm import tqdm
 from models import LlavaCodeConfig, LlavaCodeForConditionalGeneration
 from eval_metric import compute_metric_stmt
 from eval_metric_cceval import compute_metric_stmt_cceval
-from datamodule import STRUCTURE_TOKEN, FIMMAP
+from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 
 device = torch.device("cuda:0")
 

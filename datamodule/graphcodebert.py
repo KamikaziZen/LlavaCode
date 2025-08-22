@@ -191,10 +191,11 @@ class DfgDataset(Dataset):
 
             structure_ids.extend(source_ids)
             position_idxs.extend(position_idx)
-            attn_masks.append(attn_mask)
+            attn_masks.append(attn_mask.flatten())
 
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
         position_idxs = torch.tensor(position_idxs, dtype=torch.long)
+        attn_masks = torch.hstack(attn_masks)
 
         input_ids = torch.cat([
             fim_prefix_id,
