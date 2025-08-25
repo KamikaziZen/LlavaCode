@@ -47,7 +47,7 @@ def prepare_prompt(args,
     """
     fim_prefix, fim_suffix, fim_middle = fim_tokens
 
-    if args.data_prefix == 'code_cfc':
+    if args.data_prefix == 'code_cfc_uxc':
         # splitting context into chunks
         # one chunk for one file
         lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
@@ -74,10 +74,48 @@ def prepare_prompt(args,
         structure_ids = []
         for cfc in chunks:
             cfc_tokens = structure_tokenizer.tokenize(cfc)
-            cfc_tokens = cfc_tokens[:args.max_structure_length - 4]
-            # cfc_tokens = cfc_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
-            # cfc_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
-            #     + cfc_tokens + [structure_tokenizer.sep_token]
+            cfc_tokens = cfc_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
+            cfc_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
+                + cfc_tokens + [structure_tokenizer.sep_token]
+            chunk_ids = structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
+            structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
+        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
+        # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
+
+        return prompt, structure_ids, torch.tensor([num_injection_tokens])
+
+    elif args.data_prefix == 'code_cfc_jina':
+        # splitting context into chunks
+        # one chunk for one file
+        lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
+        skip = False
+        current_lines = []
+        chunks = []
+        for line in lines:
+            if line.startswith('# the below code fragment can be found in:'):
+                skip = True
+                if current_lines:
+                    chunks.append('\n'.join(current_lines))
+                current_lines = []
+            elif skip:  # skipping the file path
+                skip = False
+            elif line:
+                current_lines.append(line.strip())
+        if current_lines:
+            chunks.append('\n'.join(current_lines))
+
+        # restrict number of injection tokens (RAG files)
+        num_injection_tokens = min(args.num_structure_tokens, len(chunks))
+        chunks = chunks[:num_injection_tokens]
+
+        structure_ids = []
+        for cfc in chunks:
+            cfc_tokens = structure_tokenizer.tokenize(cfc)
+            cfc_tokens = cfc_tokens[:args.max_structure_length]
             chunk_ids = structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
             structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
@@ -266,18 +304,9 @@ if __name__ == "__main__":
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
     structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
-    if 'unixcoder' in args.structure_model_id.lower():
-        structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
-        structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
-        structure_tokenizer.add_tokens(["<mask0>"], special_tokens=True)
-    elif 'graphcodebert' in args.structure_model_id.lower():
-        structure_config = RobertaConfig.from_pretrained(args.structure_model_id)
-        structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
-    elif 'jina' in args.structure_model_id.lower():
-        structure_config = AutoConfig.from_pretrained(args.structure_model_id)
-        structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
-    else:
-        raise NotImplementedError(args.structure_model_id)
+    structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
+
+    structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
@@ -324,21 +353,23 @@ if __name__ == "__main__":
 
                 structure_ids = entry['structure_ids'].to(device)
                 num_structure_tokens = entry['num_structure_tokens'].to(device)
-                cur_pred = model.generate(**inputs,
-                                          use_cache=True,
-                                          do_sample=False,
-                                          structure_values=structure_ids,
-                                          num_structure_tokens=num_structure_tokens,
-                                          max_new_tokens=args.gen_length,
-                                          bad_words_ids=[[configuration.structure_token_id]])
+                cur_pred = model.generate(
+                    **inputs,
+                    use_cache=True,
+                    do_sample=False,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens,
+                    max_new_tokens=args.gen_length,
+                    bad_words_ids=[[configuration.structure_token_id]])
 
             else:
 
-                cur_pred = model.generate(**inputs,
-                                          use_cache=True,
-                                          do_sample=False,
-                                          max_new_tokens=args.gen_length,
-                                          bad_words_ids=[[configuration.structure_token_id]])
+                cur_pred = model.generate(
+                    **inputs,
+                    use_cache=True,
+                    do_sample=False,
+                    max_new_tokens=args.gen_length,
+                    bad_words_ids=[[configuration.structure_token_id]])
 
             prediction = code_tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
 

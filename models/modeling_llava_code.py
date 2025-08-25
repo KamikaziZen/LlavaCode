@@ -339,7 +339,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if nums_structure_tokens is not None:
             # this shouldn't be triggered during training_stage == 0
             # nums_structure_tokens: number of structure tokens for each sample in a batch
-            assert False
             max_num = nums_structure_tokens.max()
             row_ids = torch.arange(max_num).expand(len(nums_structure_tokens), max_num).to(nums_structure_tokens.device)
             mask = row_ids < nums_structure_tokens.unsqueeze(1)

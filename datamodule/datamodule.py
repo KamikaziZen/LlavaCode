@@ -112,7 +112,7 @@ class LlavaCodeDataModule(LightningDataModule):
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
-        elif self.data_prefix == 'code_cfc':
+        elif self.data_prefix == 'code_cfc_uxc':
             return CodeCfcDataset(
                 raw_data,
                 training_stage=self.training_stage,
@@ -122,15 +122,16 @@ class LlavaCodeDataModule(LightningDataModule):
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
-            # return JinaDataset(
-            #     raw_data,
-            #     training_stage=self.training_stage,
-            #     code_tokenizer=self.code_tokenizer,
-            #     structure_tokenizer=self.structure_tokenizer,
-            #     fim_tokens_ids=self.fim_tokens_ids,
-            #     structure_token_id=self.structure_token_id,
-            #     num_structure_tokens=self.num_structure_tokens,
-            #     max_structure_length=512)
+        elif self.data_prefix == 'code_cfc_jina':
+            return JinaDataset(
+                raw_data,
+                training_stage=self.training_stage,
+                code_tokenizer=self.code_tokenizer,
+                structure_tokenizer=self.structure_tokenizer,
+                fim_tokens_ids=self.fim_tokens_ids,
+                structure_token_id=self.structure_token_id,
+                num_structure_tokens=self.num_structure_tokens,
+                max_structure_length=512)
         elif self.data_prefix == 'codeast_cfc':
             return CodeAstCfcDataset(
                 raw_data,

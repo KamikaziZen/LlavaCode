@@ -170,27 +170,6 @@ class CodeCfcDataset(Dataset):
         fim_prefix_id, fim_suffix_id, fim_middle_id = self.fim_tokens_ids.reshape(3, 1)
 
         if self.training_stage == 0:
-            # chunk = self.data[ind]['content']['crossfile_array'][0]
-            # # remove decommenting?
-            # # cfc = '\n'.join(chunk.splitlines()[1:]).replace('#', '')  # removing file path in the first line and decommenting
-            # cfc = chunk
-            # cfc_tokens = self.ast_tokenizer.tokenize(cfc)
-            # cfc_tokens = cfc_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
-            # chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
-            #     + cfc_tokens + [self.ast_tokenizer.sep_token]
-            # structure_ids = self.ast_tokenizer.convert_tokens_to_ids(chunk_tokens)
-
-            # input_ids = torch.cat([
-            #     torch.tensor([self.structure_token_id] * self.num_structure_tokens),
-            #     self.code_tokenizer(cfc, return_tensors='pt').input_ids[0]
-            # ])
-            # import random
-            # roll = random.randint(1, 500)
-            # if roll == 1:
-            #     print("structure ids len", len(structure_ids))
-            #     print('input ids shape', self.code_tokenizer(cfc, return_tensors='pt').input_ids.shape)
-
-            # item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
 
             orig_ind = ind // self.expand_factor
             sub_ind = ind % self.expand_factor
@@ -217,13 +196,12 @@ class CodeCfcDataset(Dataset):
 
         else:
 
-            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt').input_ids[0]
-            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt').input_ids[0]
-            target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt').input_ids[0]
+            # preliminary truncating to save memory and avoid warnings
+            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
 
             tgt_len = len(target_ids)
-            if not self.num_structure_tokens:
-                self.num_structure_tokens = len(self.data[ind]['content']['crossfile_array'])
             lr_budget = self.max_seq_length - tgt_len - self.num_structure_tokens - 3  # 3 tokens for FIM
             rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
             lc_budget = int(rc_budget * self.lc_rc_ratio)
@@ -234,6 +212,7 @@ class CodeCfcDataset(Dataset):
             structure_ids = []
             for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
+                # cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
                 code_tokens = self.ast_tokenizer.tokenize(cfc)  # TODO: try decommenting?
                 code_tokens = code_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
                 chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
@@ -252,7 +231,20 @@ class CodeCfcDataset(Dataset):
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
-            item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+            # for KL-div training
+            all_cfc = '\n'.join(self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens])
+            all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            teacher_input_ids = torch.cat([
+                fim_prefix_id,
+                left_context_ids,
+                fim_suffix_id,
+                right_context_ids,
+                self.code_tokenizer('# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                all_cfc_ids,
+                fim_middle_id,
+                target_ids]).to(torch.long)
+
+            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
 
         return item
 
