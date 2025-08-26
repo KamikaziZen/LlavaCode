@@ -47,6 +47,7 @@ PARAPHRASE_CUES = [
     "# Another representation of the above algorithm appears below",
 ]
 
+# cues for instruction model
 # PARAPHRASE_CUES = [
 #     "Background: [X] implements the same functionality as [D]",
 #     "Background: [X] Can you re-express the above code in your own way? [D]",

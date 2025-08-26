@@ -36,6 +36,7 @@ from typing import List, Optional, Tuple, Union
 from .modeling_unixcoder import UniXcoderEncoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
+from .modeling_qwenembed import QwenEmbedEncoder
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 
 
@@ -269,6 +270,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if 'unixcoder' in self.config.structure_config.model_id.lower():
             # self.structure_model = UniXcoder(self.config.structure_config.model_id)
             self.structure_model = UniXcoderEncoder(
+                AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
+        elif 'qwen' in self.config.structure_config.model_id.lower():
+            self.structure_model = QwenEmbedEncoder(
                 AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
         # elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
         #     self.structure_model = EnhancedGNNEncoder(

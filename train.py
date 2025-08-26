@@ -94,10 +94,12 @@ if __name__ == "__main__":
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
     structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
-    structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
+    structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id, use_fast=False)
 
     structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
+    structure_config.pad_token_id = structure_tokenizer.pad_token_id
+
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
     text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
@@ -115,13 +117,6 @@ if __name__ == "__main__":
     #     print('Loading projection weighs')
     #     model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
 
-    # if 'unixcoder' in args.structure_model_id.lower():
-    #     structure_tokenizer = model.model.structure_model.tokenizer
-    # elif 'graphcodebert' in args.structure_model_id.lower():
-    #     structure_tokenizer = RobertaTokenizer.from_pretrained(args.structure_model_id)
-    # elif 'jina' in args.structure_model_id.lower():
-    #     structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
-
     # Stage 0: only projection is trained on entropy loss
     # Stage 1: only projection is trained on entropy loss and KL loss
     # Stage 2: projection and llm are trained on entropy loss
@@ -132,9 +127,13 @@ if __name__ == "__main__":
     if args.training_stage == 0 or args.training_stage == 1 or args.training_stage == 2:
         for p in model.model.language_model.parameters():
             p.requires_grad = False
-    if args.training_stage == 0:
+
+    # unfreezing Q and V of the first attention block
+    if args.training_stage == 0 or args.training_stage == 1:
         for name, p in model.named_parameters():
-            if name.startswith('model.language_model.layers.0.'):
+            if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.query'):
+                p.requires_grad = True
+            if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.value'):
                 p.requires_grad = True
 
     trainable_params, all_params = 0, 0
@@ -186,7 +185,6 @@ if __name__ == "__main__":
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
-        'accelerator': "gpu",
         'callbacks': callbacks,
         'logger': [clearml_logger, csv_logger],
         'strategy': DeepSpeedStrategy(config=args.ds_config) \

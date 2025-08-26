@@ -14,6 +14,7 @@ from .unixcoder import (
 )
 # from .graphcodebert import DfgDataset
 from .jina import JinaDataset
+from .qwenembed import Qwen3Dataset
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -41,7 +42,7 @@ class LlavaCodeDataCollator:
             padding=True,
             pad_to_multiple_of=512,
             return_tensors='pt',
-            padding_side='right'
+            padding_side='left'
         )
         batch['structure_ids'] = structure_batch['input_ids']
 
@@ -124,6 +125,16 @@ class LlavaCodeDataModule(LightningDataModule):
                 max_structure_length=512)
         elif self.data_prefix == 'code_cfc_jina':
             return JinaDataset(
+                raw_data,
+                training_stage=self.training_stage,
+                code_tokenizer=self.code_tokenizer,
+                structure_tokenizer=self.structure_tokenizer,
+                fim_tokens_ids=self.fim_tokens_ids,
+                structure_token_id=self.structure_token_id,
+                num_structure_tokens=self.num_structure_tokens,
+                max_structure_length=512)
+        elif self.data_prefix == 'code_cfc_qwen':
+            return Qwen3Dataset(
                 raw_data,
                 training_stage=self.training_stage,
                 code_tokenizer=self.code_tokenizer,
