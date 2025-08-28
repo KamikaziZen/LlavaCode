@@ -105,7 +105,8 @@ if __name__ == "__main__":
     text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
-                                    structure_token_id=structure_token_id)
+                                    structure_token_id=structure_token_id,
+                                    injector=True)
 
     if args.model_checkpoint is not None:
         logger.info(f"Loading checkpoint: {args.model_checkpoint}")
@@ -129,12 +130,12 @@ if __name__ == "__main__":
             p.requires_grad = False
 
     # unfreezing Q and V of the first attention block
-    if args.training_stage == 0 or args.training_stage == 1:
-        for name, p in model.named_parameters():
-            if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.query'):
-                p.requires_grad = True
-            if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.value'):
-                p.requires_grad = True
+    # if args.training_stage == 0 or args.training_stage == 1:
+    #     for name, p in model.named_parameters():
+    #         if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.query'):
+    #             p.requires_grad = True
+    #         if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.value'):
+    #             p.requires_grad = True
 
     trainable_params, all_params = 0, 0
     for name, param in model.named_parameters():

@@ -134,6 +134,7 @@ class LlavaCodeConfig(PretrainedConfig):
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
+        injector=False,
         **kwargs,
     ):
         self.projector_hidden_act = projector_hidden_act
@@ -153,6 +154,7 @@ class LlavaCodeConfig(PretrainedConfig):
 
         self.structure_token_id = structure_token_id
         self.pad_token_id = pad_token_id  # has to go after super() init
+        self.injector = injector
 
 
 # class LlavaCodeMultiModalProjector(nn.Module):
@@ -202,6 +204,48 @@ class LlavaCodeMultiModalProjector(nn.Module):
         hidden_states = self.linear_2(hidden_states)
         hidden_states = self.ln_2(hidden_states)
         return hidden_states
+
+
+class ResidualInjector(nn.Module):
+    def __init__(self, num_layers):
+        """
+        num_layers: number of transformer blocks
+        hidden_dim: hidden size of the model
+        """
+        super().__init__()
+        self.num_layers = num_layers
+
+        # Trainable scalar per block
+        self.coeffs = nn.Parameter(torch.ones(num_layers), requires_grad=True)  # shape [num_layers]
+
+        # Dynamic per-batch storage (set before forward)
+        self.injection_tensor = None
+
+    def make_hook(self, layer_id):
+        """
+        Returns a forward_pre_hook for a given transformer block
+        """
+        def hook(module, input):
+            hidden_states = input[0]  # (B, S, D)
+            coeff = self.coeffs[layer_id]
+
+            # Build injection tensor from vectors and mask
+            # injection_tensor = torch.zeros_like(hidden_states)
+            # injection_tensor.masked_scatter_(self.mask, self.injection_vectors)
+            hidden_states = hidden_states + coeff * self.injection_tensor
+            return (hidden_states,) + input[1:]
+
+        return hook
+
+    def register_hooks(self, blocks):
+        """
+        Register hooks to all transformer blocks except the first one
+        Assumes `model.model.layers` contains the transformer blocks
+        """
+        for i, block in enumerate(blocks):
+            # if i == 0:
+            #     continue
+            block.register_forward_pre_hook(self.make_hook(i))
 
 
 @dataclass
@@ -288,10 +332,16 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
 
         self.multi_modal_projector = LlavaCodeMultiModalProjector(config)
         print('before post_init', self.multi_modal_projector.linear_1.weight.data.norm(2))
-        embed_std = 1 / math.sqrt(config.text_config.hidden_size)
 
         self.vocab_size = config.text_config.vocab_size
         self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
+
+        if config.injector:
+            self.injector = ResidualInjector(num_layers=len(self.language_model.layers))
+            self.injector.register_hooks(self.language_model.layers)
+            print(self.injector.coeffs)
+        else:
+            self.injector = None
 
         if 'qwen' in self.config.text_config.model_id.lower():
             self.fim_tokens = FIMMAP['qwen2.5']
@@ -303,6 +353,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
         print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
+        print(self.injector.coeffs)
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
@@ -351,17 +402,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             # others fully consist of padding
             structure_embedding = structure_embedding[flat_mask]
 
-        # from datetime import datetime
-        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        # torch.save(structure_embedding, f"test_tensors/values_{timestamp}.pt")
-
         # structure_embedding = torch.nn.functional.normalize(structure_embedding, p=2, dim=-1)  # normalize the embedding
         # structure_embedding = torch.randn_like(structure_embedding, dtype=torch.float)  # sanity check with random inputs
         structure_features = self.multi_modal_projector(structure_embedding)
-        # import random
-        # roll = random.randint(1, 1000)
-        # if roll == 1:
-        #     print("structure features shape", structure_features.shape)
         return structure_features
 
     @can_return_tuple
@@ -430,17 +473,17 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             # structure_features = torch.cat(new_structure_features)
             # structure_features = hidden_states
 
+        if self.injector is not None:
+            self.injector.injection_tensor = torch.zeros_like(inputs_embeds)
         if structure_features is not None:
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
             assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), \
                 f'Mask does not correspond to the number of structure features: {inputs_embeds[special_structure_mask].numel()} != {structure_features.numel()}'
-            inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
-
-            # from datetime import datetime
-            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            # torch.save(structure_features, f"test_tensors/tensor_{timestamp}.pt")
-            # print('inside', structure_features.shape)
+            if self.injector is not None:
+                self.injector.injection_tensor = torch.zeros_like(inputs_embeds).to(inputs_embeds.device).masked_scatter(special_structure_mask, structure_features)
+            else:
+                inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
 
         outputs = self.language_model(
             # input_ids: Optional[torch.Tensor] = None,
@@ -915,6 +958,10 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 "weight_decay": 0.0,
             },
         ]
+        # if self.model.injector is not None:
+        #     optim_groups.append({
+        #         "params": list(self.model.injector.parameters()),
+        #         "weight_decay": 0.0})
 
         # optimizer = FusedAdam(optim_groups, lr=self.lr)
         optimizer = AdamW(optim_groups, lr=self.lr)
