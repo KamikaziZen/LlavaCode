@@ -99,7 +99,7 @@ class Qwen3Dataset(Dataset):
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                self.code_tokenizer('# Relevant examples:', return_tensors='pt').input_ids[0],
                 torch.tensor([self.structure_token_id] * self.num_structure_tokens),
                 fim_middle_id,
                 target_ids]).to(torch.long)
@@ -112,7 +112,7 @@ class Qwen3Dataset(Dataset):
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                self.code_tokenizer('# Relevant examples:', return_tensors='pt').input_ids[0],
                 all_cfc_ids,
                 fim_middle_id,
                 target_ids]).to(torch.long)

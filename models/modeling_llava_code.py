@@ -278,7 +278,8 @@ class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
             structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
     """
 
-    structure_hidden_states: Optional[torch.FloatTensor] = None
+    structure_features: Optional[torch.FloatTensor] = None
+    structure_embeddings: Optional[torch.FloatTensor] = None
 
 
 class LlavaCodePreTrainedModel(PreTrainedModel):
@@ -296,14 +297,15 @@ class LlavaCodePreTrainedModel(PreTrainedModel):
     _supports_attention_backend = True
 
     def _init_weights(self, module):
-        std = getattr(self.config, "initializer_range", self.config.get_text_config().initializer_range)
+        pass
+        # std = getattr(self.config, "initializer_range", self.config.get_text_config().initializer_range)
 
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, LlavaCodeModel):
-            embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
+        # if isinstance(module, nn.Linear):
+        #     module.weight.data.normal_(mean=0.0, std=std)
+        #     if module.bias is not None:
+        #         module.bias.data.zero_()
+        # elif isinstance(module, LlavaCodeModel):
+        #     embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
 
 
 class LlavaCodeModel(LlavaCodePreTrainedModel):
@@ -353,7 +355,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
         print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
-        print(self.injector.coeffs)
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
@@ -361,7 +362,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
     def set_input_embeddings(self, value):
         self.language_model.set_input_embeddings(value)
 
-    def get_structure_features(self, structure_values, nums_structure_tokens=None, structure_pos_idx=None, structure_attn_mask=None):
+    def get_structure_features_and_embeddings(self, structure_values, nums_structure_tokens=None, structure_pos_idx=None, structure_attn_mask=None):
         # print('structure_values shape', structure_values.shape, 'num', nums_structure_tokens)
         if structure_pos_idx and structure_attn_mask:
 
@@ -405,7 +406,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         # structure_embedding = torch.nn.functional.normalize(structure_embedding, p=2, dim=-1)  # normalize the embedding
         # structure_embedding = torch.randn_like(structure_embedding, dtype=torch.float)  # sanity check with random inputs
         structure_features = self.multi_modal_projector(structure_embedding)
-        return structure_features
+        return structure_features, structure_embedding
 
     @can_return_tuple
     def forward(
@@ -453,7 +454,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             inputs_embeds = self.get_input_embeddings()(input_ids)  # from language model only
 
         if structure_values is not None and structure_features is None and not using_cache:
-            structure_features = self.get_structure_features(
+            structure_features, structure_embeddings = self.get_structure_features_and_embeddings(
                 structure_values, num_structure_tokens, structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             # import random
@@ -472,6 +473,8 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             #     new_structure_features.append(structure_features_row.mean(dim=0))
             # structure_features = torch.cat(new_structure_features)
             # structure_features = hidden_states
+        else:
+            structure_embeddings = None
 
         if self.injector is not None:
             self.injector.injection_tensor = torch.zeros_like(inputs_embeds)
@@ -507,7 +510,8 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            structure_hidden_states=structure_features,
+            structure_features=structure_features,
+            structure_embeddings=structure_embeddings
         )
 
 
@@ -548,7 +552,8 @@ class LlavaCodeCausalLMOutputWithPast(ModelOutput):
     past_key_values: Optional[List[torch.FloatTensor]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
-    structure_hidden_states: Optional[torch.FloatTensor] = None
+    structure_features: Optional[torch.FloatTensor] = None
+    structure_embeddings: Optional[torch.FloatTensor] = None
 
 
 class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixin, LightningModule):
@@ -616,6 +621,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             self.alpha_kl = self.trainer_args.alpha_kl
             self.kl_temperature = self.trainer_args.kl_temperature
             self.distill_topk = self.trainer_args.distill_topk
+            
+            self.alpha_align = self.trainer_args.alpha_align
 
             self.training_stage = self.trainer_args.training_stage
 
@@ -712,6 +719,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         loss = None
         if labels is not None:
+            assert False
             loss = self.loss_function(
                 logits=logits, labels=labels, vocab_size=self.vocab_size, **kwargs
             )
@@ -722,7 +730,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            structure_hidden_states=outputs.structure_hidden_states,
+            structure_features=outputs.structure_features,
+            structure_embeddings=outputs.structure_embeddings
         )
 
     def prepare_inputs_for_generation(
@@ -829,15 +838,34 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         #     print("pad token_id", self.pad_token_id)
         #     print('attn', attention_mask)
         assert structure_attn_mask is None and structure_pos_idx is None
-        logits = self(
+        outputs = self(
             input_ids=input_ids,
             attention_mask=attention_mask,
             structure_values=structure_ids,
             structure_attn_mask=structure_attn_mask,
             structure_pos_idx=structure_pos_idx,
-            num_structure_tokens=num_structure_tokens).logits
+            num_structure_tokens=num_structure_tokens)
+        logits = outputs.logits
         loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
         self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
+
+        if self.alpha_align is not None and self.alpha_align > 0.0:
+            projections = outputs.structure_features
+            embeddings = outputs.structure_embeddings
+            proj_flat = projections.view(projections.size(0), -1)   # [B, P*D]
+            embed_flat = embeddings.view(embeddings.size(0), -1)
+
+            proj_sim = F.cosine_similarity(proj_flat.unsqueeze(1), proj_flat.unsqueeze(0), dim=-1)
+            embed_sim = F.cosine_similarity(embed_flat.unsqueeze(1), embed_flat.unsqueeze(0), dim=-1)
+
+            align_loss = F.mse_loss(proj_sim, embed_sim)
+
+            proj_var = projections.var(dim=0).mean()
+            var_loss = F.relu(1e-4 - proj_var)
+
+            loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
+
+            self.log("Train/Loss/Align", align_loss, sync_dist=True, on_step=True, prog_bar=True)
 
         if self.alpha_kl is not None and self.alpha_kl > 0.0:
             assert self.training_stage > 0

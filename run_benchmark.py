@@ -83,12 +83,12 @@ def prepare_prompt(args,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Relevant examples:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
         # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
-    elif args.data_prefix == 'code_cfc_jina':
+    elif args.data_prefix in ['code_cfc_jina', 'code_cfc_qwen']:
         # splitting context into chunks
         # one chunk for one file
         lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
@@ -122,8 +122,7 @@ def prepare_prompt(args,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
-        # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Relevant examples:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
@@ -308,6 +307,7 @@ if __name__ == "__main__":
 
     structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
+    structure_config.pad_token_id = structure_tokenizer.pad_token_id
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
 
@@ -317,7 +317,8 @@ if __name__ == "__main__":
     text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
-                                    structure_token_id=structure_token_id)
+                                    structure_token_id=structure_token_id,
+                                    injector=True)
     print('tokenizer shapes:', code_tokenizer.vocab_size, len(code_tokenizer))  # delete later
 
     if args.model_checkpoint:
