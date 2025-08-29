@@ -43,8 +43,8 @@ from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, temperature, distill_topk=None):
 
     # make sure the teacher_logits and student_logits have the same shape
-    # loss_fct = nn.KLDivLoss(reduction="batchmean")
-    loss_fct = nn.KLDivLoss(reduction="sum")
+    loss_fct = nn.KLDivLoss(reduction="batchmean")
+    # loss_fct = nn.KLDivLoss(reduction="sum")
     _, _, vocab_size = student_logits.shape
 
     # only compute loss in the completion part, not prompt
@@ -66,7 +66,7 @@ def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, 
         F.log_softmax(student_logits_selected / temperature, dim=-1),
         F.softmax(teacher_logits_selected / temperature, dim=-1),
     ) * (temperature ** 2)
-    kl_loss = kl_loss / student_logits_selected.size(0)  # average per valid token
+    # kl_loss = kl_loss / student_logits_selected.size(0)  # average per valid token
 
     return kl_loss
 
@@ -367,7 +367,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if structure_pos_idx and structure_attn_mask:
 
             # structure values: code + dfg traversal
-            structure_pos_idx = structure_pos_idx.rehape(-1, 512)
+            structure_pos_idx = structure_pos_idx.reshape(-1, 512)
             structure_attn_mask = structure_attn_mask.reshape(-1, 512, 512)
 
             nodes_mask = structure_pos_idx.eq(0)
@@ -611,7 +611,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             # Loss Configuration
             if self.trainer_args.loss == 'mle':
-                self.loss = nn.CrossEntropyLoss()
+                self.loss = nn.CrossEntropyLoss(ignore_index=-100)
             # elif self.trainer_args.loss == 'mse':
             #     self.loss = nn.MSELoss(reduction='mean')
             # elif self.trainer_args.loss == 'cosine':
@@ -621,7 +621,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             self.alpha_kl = self.trainer_args.alpha_kl
             self.kl_temperature = self.trainer_args.kl_temperature
             self.distill_topk = self.trainer_args.distill_topk
-            
+
             self.alpha_align = self.trainer_args.alpha_align
 
             self.training_stage = self.trainer_args.training_stage
@@ -651,10 +651,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     @property
     def language_model(self):
         return self.model.language_model
-
-    @property
-    def vision_tower(self):
-        return self.model.vision_tower
 
     @property
     def multi_modal_projector(self):
