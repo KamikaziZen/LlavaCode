@@ -114,9 +114,6 @@ if __name__ == "__main__":
             args.model_checkpoint, config=configuration)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
-    # if args.projector_checkpoint:
-    #     print('Loading projection weighs')
-    #     model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
 
     # Stage 0: only projection is trained on entropy loss
     # Stage 1: only projection is trained on entropy loss and KL loss
@@ -146,10 +143,6 @@ if __name__ == "__main__":
               All Parameters: {all_params},
               Percentage: {trainable_params / all_params * 100 :.2f}%""")
 
-    total_norm = 0.0
-    for p in model.model.multi_modal_projector.parameters():
-        total_norm += p.data.norm(2).item() ** 2
-    print(f"Total norm of projector weights: {total_norm}")
 
     data = LlavaCodeDataModule(
         args.data_prefix,
@@ -180,8 +173,8 @@ if __name__ == "__main__":
     # callbacks.append(checkpoint_callback)
     # callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
 
-    tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1]]
-    clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=tags)
+    tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1], 'crossattn']
+    clearml_logger = ClearMLLogger(project_name='flamingo', task_name=args.exp_name, tags=tags)
     csv_logger = CSVLogger("lightning_logs/", name=args.exp_name, version="")
 
     logger.info('Initializing PL Trainer...')

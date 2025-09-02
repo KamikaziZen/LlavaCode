@@ -34,11 +34,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 from .modeling_unixcoder import UniXcoderEncoder
-from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
 from .modeling_qwenembed import QwenEmbedEncoder
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
+from .modeling_gated_attn import GatedCrossAttentionBlock, PerceiverResampler
 
+from typing import Optional, Tuple
 
 def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, temperature, distill_topk=None):
 
@@ -131,14 +132,24 @@ class LlavaCodeConfig(PretrainedConfig):
         text_config=None,
         structure_token_id=None,
         pad_token_id=0,
-        projector_hidden_act="gelu",
         tie_word_embeddings=False,
-        multimodal_projector_bias=True,
-        injector=False,
+        cross_attn_skip=3,
+        depth=2,
+        dim_head=16,
+        heads=3,
+        num_latents=8,
+        num_media_embeds=10,
+        ff_mult=2,
         **kwargs,
     ):
-        self.projector_hidden_act = projector_hidden_act
-        self.multimodal_projector_bias = multimodal_projector_bias
+        
+        self.depth = depth
+        self.dim_head = dim_head
+        self.heads = heads
+        self.num_latents = num_latents
+        self.num_media_embeds = num_media_embeds
+        self.ff_mult = ff_mult
+        self.cross_attn_skip = cross_attn_skip 
 
         self.structure_config = structure_config
 
@@ -154,99 +165,50 @@ class LlavaCodeConfig(PretrainedConfig):
 
         self.structure_token_id = structure_token_id
         self.pad_token_id = pad_token_id  # has to go after super() init
-        self.injector = injector
 
-
-# class LlavaCodeMultiModalProjector(nn.Module):
-#     def __init__(self, config: LlavaCodeConfig):
-#         super().__init__()
-#         self.linear_1 = nn.Linear(
-#             config.structure_config.hidden_size,
-#             config.text_config.hidden_size * 4,
-#             bias=config.multimodal_projector_bias,
-#         )
-#         self.act = ACT2FN[config.projector_hidden_act]
-#         self.linear_2 = nn.Linear(
-#             config.text_config.hidden_size * 4, config.text_config.hidden_size * 4, bias=config.multimodal_projector_bias
-#         )
-#         self.linear_3 = nn.Linear(
-#             config.text_config.hidden_size * 4, config.text_config.hidden_size, bias=config.multimodal_projector_bias
-#         )
-
-#     def forward(self, structure_features):
-#         hidden_states = self.linear_1(structure_features)
-#         hidden_states = self.act(hidden_states)
-#         hidden_states = self.linear_2(hidden_states)
-#         hidden_states = self.act(hidden_states)
-#         hidden_states = self.linear_3(hidden_states)
-#         return hidden_states
-
-
-class LlavaCodeMultiModalProjector(nn.Module):
-    def __init__(self, config: LlavaCodeConfig):
+class LlavaCodeDecoderLayer(nn.Module):
+    """Wrapper around a base decoder layer with optional gated cross-attention to structure latents."""
+    
+    def __init__(self, base_layer, cross_attn_block=None):
         super().__init__()
-        self.linear_1 = nn.Linear(
-            config.structure_config.hidden_size,
-            config.text_config.hidden_size,
-            bias=config.multimodal_projector_bias,
+        self.base_layer = base_layer  # e.g., LlamaDecoderLayer
+        self.cross_attn_block = cross_attn_block  # GatedCrossAttentionBlock or None
+
+    def forward(
+        self,
+        hidden_states,
+        media=None,
+        media_locations=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        output_attentions=False,
+        use_cache=False,
+        cache_position=None,
+        position_embeddings=None,
+        **kwargs
+    ):  
+
+        if self.cross_attn_block is not None and media is not None:
+            # print('######## ATTN BLOCK #########')
+            hidden_states = self.cross_attn_block(
+                x=hidden_states,
+                media=media,
+                media_locations=media_locations
+            )
+            
+        outputs = self.base_layer(
+            hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values if use_cache else None,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs
         )
-        self.act = ACT2FN[config.projector_hidden_act]
-        self.linear_2 = nn.Linear(
-            config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
-        )
-        self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
-        self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
-
-    def forward(self, structure_features):
-        hidden_states = self.linear_1(structure_features)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.ln_1(hidden_states)
-        hidden_states = self.linear_2(hidden_states)
-        hidden_states = self.ln_2(hidden_states)
-        return hidden_states
-
-
-class ResidualInjector(nn.Module):
-    def __init__(self, num_layers):
-        """
-        num_layers: number of transformer blocks
-        hidden_dim: hidden size of the model
-        """
-        super().__init__()
-        self.num_layers = num_layers
-
-        # Trainable scalar per block
-        self.coeffs = nn.Parameter(torch.ones(num_layers), requires_grad=True)  # shape [num_layers]
-
-        # Dynamic per-batch storage (set before forward)
-        self.injection_tensor = None
-
-    def make_hook(self, layer_id):
-        """
-        Returns a forward_pre_hook for a given transformer block
-        """
-        def hook(module, input):
-            hidden_states = input[0]  # (B, S, D)
-            coeff = self.coeffs[layer_id]
-
-            # Build injection tensor from vectors and mask
-            # injection_tensor = torch.zeros_like(hidden_states)
-            # injection_tensor.masked_scatter_(self.mask, self.injection_vectors)
-            hidden_states = hidden_states + coeff * self.injection_tensor
-            return (hidden_states,) + input[1:]
-
-        return hook
-
-    def register_hooks(self, blocks):
-        """
-        Register hooks to all transformer blocks except the first one
-        Assumes `model.model.layers` contains the transformer blocks
-        """
-        for i, block in enumerate(blocks):
-            # if i == 0:
-            #     continue
-            block.register_forward_pre_hook(self.make_hook(i))
-
+        return outputs
 
 @dataclass
 class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
@@ -318,10 +280,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         elif 'qwen' in self.config.structure_config.model_id.lower():
             self.structure_model = QwenEmbedEncoder(
                 AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
-        # elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
-        #     self.structure_model = EnhancedGNNEncoder(
-        #         hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
-        #     self.structure_model.load_state_dict(torch.load(self.config.structure_config.model_id))
         elif 'graphcodebert' in self.config.structure_config.model_id.lower():
             self.structure_model = RobertaForSequenceClassification.from_pretrained(self.config.structure_config.model_id, config=self.config.structure_config)
         elif 'jina' in self.config.structure_config.model_id.lower():
@@ -330,18 +288,57 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         else:
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
-        self.multi_modal_projector = LlavaCodeMultiModalProjector(config)
-        print('before post_init', self.multi_modal_projector.linear_1.weight.data.norm(2))
-
         self.vocab_size = config.text_config.vocab_size
         self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
 
-        if config.injector:
-            self.injector = ResidualInjector(num_layers=len(self.language_model.layers))
-            self.injector.register_hooks(self.language_model.layers)
-            print(self.injector.coeffs)
+        self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
+
+        self.cfc_proj = nn.Linear(self.structure_model.config.hidden_size, self.language_model.config.hidden_size)
+        
+        self.hidden_size_structure = self.structure_model.config.hidden_size
+        self.hidden_size_llm = self.language_model.config.hidden_size
+        try:
+            self.num_layers = self.language_model.config.num_hidden_layers
+        except AttributeError:
+            self.num_layers = self.language_model.config.n_layer
+
+
+        # Perceiver resampler for structure/context embeddings
+        self.resampler = PerceiverResampler(
+            dim=self.hidden_size_structure,
+            depth=self.config.depth,
+            dim_head=self.config.dim_head,
+            heads=self.config.heads,
+            num_latents=self.config.num_latents,
+            num_media_embeds=self.config.num_media_embeds,
+            ff_mult=self.config.ff_mult
+        )
+        # Gated cross-attention to fuse latents into text
+        self.cross_attn_skip = self.config.cross_attn_skip
+        # Replace each layer with wrapped version
+        self.cross_attn_blocks = nn.ModuleList([
+            GatedCrossAttentionBlock(
+                dim=self.hidden_size_llm,
+                dim_head=self.config.dim_head,
+                heads=self.config.heads,
+                ff_mult=self.config.ff_mult
+            ) if i % self.cross_attn_skip == 0 else None
+            for i in range(self.num_layers)
+        ])
+
+        # Get the list of transformer layers
+        if hasattr(self.language_model, 'layers'):
+            layers = self.language_model.layers
+        elif hasattr(self.language_model, 'h'):
+            layers = self.language_model.h
         else:
-            self.injector = None
+            raise ValueError("Unsupported language model architecture")
+
+        # Replace with wrapped layers
+        self.layers = nn.ModuleList([
+            LlavaCodeDecoderLayer(layer, cross_attn)
+            for layer, cross_attn in zip(layers, self.cross_attn_blocks)
+        ])
 
         if 'qwen' in self.config.text_config.model_id.lower():
             self.fim_tokens = FIMMAP['qwen2.5']
@@ -352,8 +349,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
 
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
-        print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
-        print(self.injector.coeffs)
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
@@ -390,6 +385,9 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         else:
 
             raise ValueError('Incorrect inputs to get_structure_features()')
+        # print(nums_structure_tokens)
+        # print('values', structure_values.shape)
+        # print('embs', structure_embedding.shape)
 
         if nums_structure_tokens is not None:
             # this shouldn't be triggered during training_stage == 0
@@ -400,11 +398,11 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             flat_mask = mask.flatten()
             # taking only those features that correspond to code_structure tokens
             # others fully consist of padding
-            structure_embedding = structure_embedding[flat_mask]
-
-        # structure_embedding = torch.nn.functional.normalize(structure_embedding, p=2, dim=-1)  # normalize the embedding
-        # structure_embedding = torch.randn_like(structure_embedding, dtype=torch.float)  # sanity check with random inputs
-        structure_features = self.multi_modal_projector(structure_embedding)
+            structure_embedding = structure_embedding[flat_mask].reshape(-1, max_num, self.structure_model.config.hidden_size) # B * N_structure_tokens x D -> B x N_structure_tokens x D_structure
+        # print(structure_embedding.shape)
+        structure_features = self.resampler(structure_embedding)
+        structure_features = self.cfc_proj(structure_features)
+        
         return structure_features
 
     @can_return_tuple
@@ -433,18 +431,17 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         # this is kostyl for starcoder
         if past_key_values is None:
             using_cache = False
-        elif isinstance(past_key_values, list):
+        elif isinstance(past_key_values, list) or isinstance(past_key_values, tuple):
             using_cache = True
         elif isinstance(past_key_values, DynamicCache):
             using_cache = bool(past_key_values.key_cache)
         else:
-            raise ValueError('Unknown past_key_values instance')
+            raise ValueError(f'Unknown past_key_values instance: {past_key_values}')
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -456,57 +453,82 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             structure_features = self.get_structure_features(
                 structure_values, num_structure_tokens, structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            # import random
-            # roll = random.randint(1, 1000)
-            # if roll > 0:
-            #     print("structure features", structure_features.shape)
-            # debug and testing
-            # structure_values = structure_values.reshape(-1, 2048)
-            # structure_features = self.language_model.wte(structure_values)
-            # with torch.no_grad():
-            #     outputs = self.language_model(inputs_embeds=structure_features, output_hidden_states=True)
-            #     hidden_states = outputs.hidden_states[-1][:, -1, :]
-            # new_structure_features = []
-            # for i in range(len(structure_features)):
-            #     structure_features_row = structure_features[i][structure_values[i] != 0]
-            #     new_structure_features.append(structure_features_row.mean(dim=0))
-            # structure_features = torch.cat(new_structure_features)
-            # structure_features = hidden_states
 
-        if self.injector is not None:
-            self.injector.injection_tensor = torch.zeros_like(inputs_embeds)
-        if structure_features is not None:
-            special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
-            special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
-            assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), \
-                f'Mask does not correspond to the number of structure features: {inputs_embeds[special_structure_mask].numel()} != {structure_features.numel()}'
-            if self.injector is not None:
-                self.injector.injection_tensor = torch.zeros_like(inputs_embeds).to(inputs_embeds.device).masked_scatter(special_structure_mask, structure_features)
-            else:
-                inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
-
-        outputs = self.language_model(
-            # input_ids: Optional[torch.Tensor] = None,
-            attention_mask=attention_mask,
-            # token_type_ids: Optional[torch.Tensor] = None,
-            position_ids=position_ids,
-            past_key_values=past_key_values if using_cache else None,
-            # head_mask: Optional[torch.Tensor] = None,
-            inputs_embeds=inputs_embeds,
-            # encoder_hidden_states: Optional[torch.Tensor] = None,
-            # encoder_attention_mask: Optional[torch.Tensor] = None,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
-            **kwargs
+        hidden_states = inputs_embeds
+        bsz, q_len, hidden_dim = hidden_states.size()
+        device = hidden_states.device
+        dtype = hidden_states.dtype
+        
+        if position_ids is None:
+            position_ids = torch.arange(
+                hidden_states.shape[1], dtype=torch.long, device=hidden_states.device
+            ).unsqueeze(0)
+        position_embeddings = self.language_model.rotary_emb(
+            hidden_states, position_ids=position_ids
         )
+        
+        media_locations = (input_ids == self.config.structure_token_id)
+            
+        # Prepare KV cache
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()  # Let model auto-initialize
+
+        next_cache = None
+        if use_cache:
+            next_cache = DynamicCache() if past_key_values is None else past_key_values
+
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_cache = () if use_cache else None
+        
+        for i, layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            # Get past_key_value for this layer
+            if past_key_values is not None:
+                # Only access if layer exists in cache
+                if i < len(past_key_values.key_cache):
+                    past_key_value = past_key_values[i]  # (k, v) for layer i
+                else:
+                    past_key_value = None
+            else:
+                past_key_value = None
+
+            layer_outputs = layer(
+                hidden_states=hidden_states,
+                media=structure_features,
+                media_locations=media_locations,
+                attention_mask=attention_mask,
+                # position_ids=position_ids,
+                past_key_values=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+
+            hidden_states = layer_outputs[0]
+            if use_cache:
+                # Extract updated key/value states from layer output
+                # layer_outputs[1] should be (key_states, value_states)
+                key_states, value_states = layer_outputs[1]
+                # Append to global cache
+                next_cache.update(key_states, value_states, i)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+            
+        hidden_states = self.language_model.norm(hidden_states)
+
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
 
         return LlavaCodeModelOutputWithPast(
-            last_hidden_state=outputs.last_hidden_state,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache if use_cache else None,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
             structure_hidden_states=structure_features,
         )
 
@@ -555,8 +577,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     _checkpoint_conversion_mapping = {
         "^language_model.model": "model.language_model",
         "^structure_model": "model.structure_model",
-        "^multi_modal_projector": "model.multi_modal_projector",
-        "^language_model.lm_head": "lm_head",
+        "^model.cfc_proj.": "cfc_proj.",
+        "^model.resampler.": "resampler.",
+        "^model.cross_attn_blocks.": "cross_attn_blocks.",
+        "^model.layers.": "layers.",
+        "^lm_head.": "lm_head.",
     }
     _tied_weights_keys = ["lm_head.weight"]
 
@@ -650,8 +675,24 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         return self.model.vision_tower
 
     @property
-    def multi_modal_projector(self):
-        return self.model.multi_modal_projector
+    def structure_model(self):
+        return self.model.structure_model
+
+    @property
+    def cfc_proj(self):
+        return self.model.cfc_proj
+
+    @property
+    def resampler(self):
+        return self.model.resampler
+
+    @property
+    def cross_attn_blocks(self):
+        return self.model.cross_attn_blocks
+
+    @property
+    def layers(self):
+        return self.model.layers
 
     @can_return_tuple
     def forward(
@@ -735,8 +776,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         logits_to_keep=None,
         **kwargs,
     ):
-        # Overwritten -- in specific circumstances we don't want to forward structure values to the model
-
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(torch.bool)
         model_inputs = super().prepare_inputs_for_generation(
             input_ids,
             past_key_values=past_key_values,
@@ -958,10 +999,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 "weight_decay": 0.0,
             },
         ]
-        # if self.model.injector is not None:
-        #     optim_groups.append({
-        #         "params": list(self.model.injector.parameters()),
-        #         "weight_decay": 0.0})
 
         # optimizer = FusedAdam(optim_groups, lr=self.lr)
         optimizer = AdamW(optim_groups, lr=self.lr)

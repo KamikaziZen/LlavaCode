@@ -324,12 +324,9 @@ if __name__ == "__main__":
         print(f'Loading model from checkpoint: {args.model_checkpoint}')
         model = LlavaCodeForConditionalGeneration \
             .load_from_checkpoint(args.model_checkpoint, config=configuration).to(device)
-        print(f'after checkpoint: {model.model.multi_modal_projector.linear_1.weight.data.norm(2)}')
+        # print(f'after checkpoint: {model.model.multi_modal_projector.linear_1.weight.data.norm(2)}')
     else:
         model = LlavaCodeForConditionalGeneration(configuration).to(device)
-    if args.projector_checkpoint:
-        print(f'Loading projection weighs from {args.projector_checkpoint}')
-        model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
     model.eval()
 
     if 'qwen' in args.text_model_id.lower():
@@ -353,14 +350,44 @@ if __name__ == "__main__":
 
                 structure_ids = entry['structure_ids'].to(device)
                 num_structure_tokens = entry['num_structure_tokens'].to(device)
-                cur_pred = model.generate(
-                    **inputs,
-                    use_cache=True,
-                    do_sample=False,
-                    structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens,
-                    max_new_tokens=args.gen_length,
-                    bad_words_ids=[[configuration.structure_token_id]])
+                generated = inputs.input_ids.clone()  # Start with prompt
+
+                # Generate up to `args.gen_length` tokens
+                for _ in range(args.gen_length):
+                    # Forward pass through the model
+                    outputs = model(
+                        input_ids=generated,
+                        structure_values=structure_ids,           # Passed to cross-attention blocks
+                        num_structure_tokens=num_structure_tokens,
+                        output_attentions=False,
+                        use_cache=False,  # Disable KV cache
+                    )
+
+                    # Get logits for the last token
+                    next_token_logits = outputs.logits[:, -1, :]  # (B, vocab_size)
+
+                    # Optional: filter bad words (e.g., structure token)
+                    if hasattr(configuration, 'structure_token_id'):
+                        next_token_logits[:, configuration.structure_token_id] = -float('inf')
+
+                    # Compute entropy
+                    probs = F.softmax(next_token_logits, dim=-1)
+                    entropy = -torch.sum(probs * torch.log(probs + 1e-12), dim=-1).item()
+                    entropies.append(entropy)
+
+                    # Greedy decode (or sample if you want)
+                    next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # (B, 1)
+                    # Append to generated sequence
+                    generated = torch.cat([generated, next_token], dim=-1)
+                cur_pred = generated
+                # cur_pred = model.generate(
+                #     **inputs,
+                #     use_cache=True,
+                #     do_sample=False,
+                #     structure_values=structure_ids,
+                #     num_structure_tokens=num_structure_tokens,
+                #     max_new_tokens=args.gen_length,
+                #     bad_words_ids=[[configuration.structure_token_id]])
 
             else:
 
@@ -381,6 +408,8 @@ if __name__ == "__main__":
                 "task_id": entry["metadata"]["task_id"],
                 "pred": prediction,
             })
+            print(f"GroundTruth: {entry['groundtruth']}")
+            print(f"Predicted: {prediction}")
 
     with open(f"{args.output_dir}/prediction.jsonl", "w", encoding="utf-8") as f_pred:
         for entry in all_preds:

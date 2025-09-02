@@ -1,20 +1,20 @@
 #!/bin/bash
 
-DATA_PREFIX=code_cfc
+DATA_PREFIX=code_cfc_jina
 NUM_STRUCTURE_TOKENS=10
 # EXPERIMENT="t${NUM_STRUCTURE_TOKENS}"
-EXPERIMENT=1500k_uxc_unfreezed
+EXPERIMENT=flamingo_final
 
 # TRAIN_DATADIR=/home/jovyan/sukhorukov/codegen/data_python_20_lines_15_top_1_linecompletion/prepared_data/processed/train
 # VALID_DATADIR=/home/jovyan/sukhorukov/codegen/data_python_20_lines_15_top_1_linecompletion/prepared_data/processed/valid
 # TRAIN_DATADIR=/home/jovyan/sukhorukov/codegen/data_python_10_lines_10_top_1_linecompletion/prepared_data/processed/train
 # VALID_DATADIR=/home/jovyan/sukhorukov/codegen/data_python_10_lines_10_top_1_linecompletion/prepared_data/processed/valid
-TRAIN_DATADIR=/home/jovyan/cherniuk/LlavaCode/processed_1500k/train
-VALID_DATADIR=/home/jovyan/cherniuk/LlavaCode/processed_1500k/valid
+TRAIN_DATADIR=/home/jovyan/shares/SR006.nfs2/sukhorukov/LlavaCode/data_python_10_lines_10_top_1_linecompletion/prepared_data/processed/train
+VALID_DATADIR=/home/jovyan/shares/SR006.nfs2/sukhorukov/LlavaCode/data_python_10_lines_10_top_1_linecompletion/prepared_data/processed/valid
 # TEXT_MODEL_ID=bigcode/starcoderbase-1b
 TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-1.5B
 # TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-1.5B-Instruct
-STRUCTURE_MODEL_ID=microsoft/unixcoder-base
+STRUCTURE_MODEL_ID=jinaai/jina-embeddings-v2-base-en
 # STRUCTURE_MODEL_ID=jinaai/jina-embeddings-v2-base-en
 # STRUCTURE_MODEL_ID=microsoft/graphcodebert-base
 
@@ -32,10 +32,10 @@ STRUCTURE_MODEL_ID=microsoft/unixcoder-base
 #     --output_dir $OUTPUT_DIR \
 #     --language python
 
-TRAINING_STAGE=0
-CUDA_VISIBLE_DEVICES=0,1 python train.py \
+TRAINING_STAGE=1
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 python train.py \
     --num_workers 96 \
-    --devices 2 \
+    --devices 7 \
     --num_nodes 1 \
     --accelerator gpu \
     --text_model_id $TEXT_MODEL_ID \
@@ -47,41 +47,41 @@ CUDA_VISIBLE_DEVICES=0,1 python train.py \
     --valid_datadir $VALID_DATADIR \
     --log_dir ./logs/ \
     --seed 1234 \
-    --lr 6e-3 \
+    --lr 6e-4 \
     --lr_scheduler_type linear \
     --weight_decay 0. \
     --max_steps -1 \
-    --max_epochs 1 \
+    --max_epochs 2 \
     --warmup_steps 500 \
-    --train_batch_size 12 \
-    --valid_batch_size 12 \
-    --accumulate_grad_batches 4 \
+    --train_batch_size 7 \
+    --valid_batch_size 7 \
+    --accumulate_grad_batches 8 \
     --training_stage $TRAINING_STAGE \
     --loss mle \
-    --log_every_n_steps 50 \
+    --log_every_n_steps 10 \
     --save_step_frequency 500 \
     --val_check_interval 500 \
-    --num_structure_tokens 1 \
+    --num_structure_tokens $NUM_STRUCTURE_TOKENS \
     --precision 'bf16-mixed' \
     --exp_name qwen_stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}
 
-# MODEL_CHECKPOINT=$(ls -t "lightning_logs/qwen_stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}/checkpoints" | head -n 1)
-# MODEL_CHECKPOINT=lightning_logs/qwen_stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}/checkpoints/${MODEL_CHECKPOINT}
-# echo $MODEL_CHECKPOINT
-# OUTPUT_DIR=results_qwen/stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}
-# mkdir -p ${OUTPUT_DIR}
+MODEL_CHECKPOINT=$(ls -t "lightning_logs/qwen_stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}/checkpoints" | head -n 1)
+MODEL_CHECKPOINT=lightning_logs/qwen_stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}/checkpoints/${MODEL_CHECKPOINT}
+echo $MODEL_CHECKPOINT
+OUTPUT_DIR=results_qwen/stage=${TRAINING_STAGE}_${DATA_PREFIX}_${EXPERIMENT}
+mkdir -p ${OUTPUT_DIR}
 
-# CUDA_VISIBLE_DEVICES=0 python run_benchmark.py \
-#     --prompt_file /home/jovyan/sukhorukov/codegen/repo_eval/processed_data/python_line_completion_sparse_rg1.jsonl \
-#     --text_model_id $TEXT_MODEL_ID \
-#     --structure_model_id $STRUCTURE_MODEL_ID \
-#     --task line_completion \
-#     --compute_cceval_metric 0 \
-#     --data_prefix $DATA_PREFIX \
-#     --num_structure_tokens ${NUM_STRUCTURE_TOKENS} \
-#     --output_dir $OUTPUT_DIR \
-#     --model_checkpoint $MODEL_CHECKPOINT \
-#     --language python
+CUDA_VISIBLE_DEVICES=0 python run_benchmark.py \
+    --prompt_file /home/jovyan/sukhorukov/codegen/repo_eval/processed_data/python_line_completion_sparse_rg1.jsonl \
+    --text_model_id $TEXT_MODEL_ID \
+    --structure_model_id $STRUCTURE_MODEL_ID \
+    --task line_completion \
+    --compute_cceval_metric 0 \
+    --data_prefix $DATA_PREFIX \
+    --num_structure_tokens ${NUM_STRUCTURE_TOKENS} \
+    --output_dir $OUTPUT_DIR \
+    --model_checkpoint $MODEL_CHECKPOINT \
+    --language python
 
 # TRAINING_STAGE=1// The code snippet you provided is a shell script that includes a command to run a
 # CUDA_VISIBLE_DEVICES=0,1 python train.py \
