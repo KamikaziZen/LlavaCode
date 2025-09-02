@@ -46,14 +46,10 @@ class ClearMLLogger:
 
     @rank_zero_only
     def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
-        # print(f"[CustomLogger] Step {step} - Metrics: {metrics}")
-        # self.metrics[step] = metrics
         for (name, value) in metrics.items():
             self._logger.report_scalar(title=name, series=name, value=value, iteration=step)
-        # self._all_metrics.append({"step": step, **metrics})
 
     @rank_zero_only
     def finalize(self, status: str) -> None:
-        # with open(os.path.join(self.save_dir, "final_metrics.json"), "w") as f:
-        #     json.dump(self._all_metrics, f, indent=2)
-        self._task.close()
+        # otherwise, the task is closed after trainer.validate call
+        pass

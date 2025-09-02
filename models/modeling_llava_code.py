@@ -195,14 +195,14 @@ class LlavaCodeMultiModalProjector(nn.Module):
             config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
         )
         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
-        self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
+        # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
 
     def forward(self, structure_features):
         hidden_states = self.linear_1(structure_features)
         hidden_states = self.act(hidden_states)
         hidden_states = self.ln_1(hidden_states)
         hidden_states = self.linear_2(hidden_states)
-        hidden_states = self.ln_2(hidden_states)
+        # hidden_states = self.ln_2(hidden_states)
         return hidden_states
 
 
@@ -584,6 +584,22 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.trainer_args = trainer_args
 
     def setup(self, stage):
+        # Loss Configuration
+        if self.trainer_args.loss == 'mle':
+            self.loss = nn.CrossEntropyLoss(ignore_index=-100)
+        # elif self.trainer_args.loss == 'mse':
+        #     self.loss = nn.MSELoss(reduction='mean')
+        # elif self.trainer_args.loss == 'cosine':
+        #     self.loss = lambda x, y: (1 - F.cosine_similarity(x, y)).mean()
+        else:
+            raise ValueError(f'Invalid loss: {self.trainer_args.loss}')
+
+        self.alpha_kl = self.trainer_args.alpha_kl
+        self.kl_temperature = self.trainer_args.kl_temperature
+        self.distill_topk = self.trainer_args.distill_topk
+
+        self.alpha_align = self.trainer_args.alpha_align
+
         if stage == 'fit':
             # Hyperparameters and Configuration
             self.num_nodes = self.trainer_args.num_nodes
@@ -608,21 +624,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             self.lr_scheduler_type = self.trainer_args.lr_scheduler_type
             self.world_size = self.trainer_args.devices * self.num_nodes
-
-            # Loss Configuration
-            if self.trainer_args.loss == 'mle':
-                self.loss = nn.CrossEntropyLoss(ignore_index=-100)
-            # elif self.trainer_args.loss == 'mse':
-            #     self.loss = nn.MSELoss(reduction='mean')
-            # elif self.trainer_args.loss == 'cosine':
-            #     self.loss = lambda x, y: (1 - F.cosine_similarity(x, y)).mean()
-            else:
-                raise ValueError(f'Invalid loss: {self.trainer_args.loss}')
-            self.alpha_kl = self.trainer_args.alpha_kl
-            self.kl_temperature = self.trainer_args.kl_temperature
-            self.distill_topk = self.trainer_args.distill_topk
-
-            self.alpha_align = self.trainer_args.alpha_align
 
             self.training_stage = self.trainer_args.training_stage
 
@@ -810,7 +811,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         pos_ids = torch.arange(seq_len, device=lbl_tensor.device).unsqueeze(0)  # [1, seq_len]
 
         # Mask: keep tokens where position >= middle_pos
-        keep_mask = pos_ids >= middle_pos.unsqueeze(1)
+        keep_mask = pos_ids > middle_pos.unsqueeze(1)
 
         # Apply mask and pad masking
         lbl_tensor = torch.where(keep_mask, lbl_tensor, torch.full_like(lbl_tensor, -100))
@@ -826,13 +827,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         input_ids, labels, attention_mask = self.get_inputs_and_labels_fim(token_ids)
 
-        # import random
-        # roll = random.randint(1, 500)
-        # if roll < 1000:
-        #     print("input_ids", input_ids.shape)
-        #     print("structure_ids", structure_ids.shape)
-        #     print("pad token_id", self.pad_token_id)
-        #     print('attn', attention_mask)
+        align_loss = torch.tensor(0.0, device=input_ids.device)
+        var_loss = torch.tensor(0.0, device=input_ids.device)
+        kl_loss = torch.tensor(0.0, device=input_ids.device)
+        ce_loss = torch.tensor(0.0, device=input_ids.device)
+        loss = torch.tensor(0.0, device=input_ids.device)
+
         assert structure_attn_mask is None and structure_pos_idx is None
         outputs = self(
             input_ids=input_ids,
@@ -842,8 +842,10 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             structure_pos_idx=structure_pos_idx,
             num_structure_tokens=num_structure_tokens)
         logits = outputs.logits
-        loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-        self.log("Train/Loss/MLE", loss, sync_dist=True, on_step=True, prog_bar=True)
+        ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
+        self.log("Train/Loss/MLE", ce_loss, sync_dist=True, on_step=True, prog_bar=True)
+
+        loss += 0.0 * ce_loss
 
         if self.alpha_align is not None and self.alpha_align > 0.0:
             projections = outputs.structure_features
@@ -855,13 +857,13 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             embed_sim = F.cosine_similarity(embed_flat.unsqueeze(1), embed_flat.unsqueeze(0), dim=-1)
 
             align_loss = F.mse_loss(proj_sim, embed_sim)
+            self.log("Train/Loss/Align", align_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             proj_var = projections.var(dim=0).mean()
             var_loss = F.relu(1e-4 - proj_var)
+            self.log("Train/Loss/Var", var_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
-
-            self.log("Train/Loss/Align", align_loss, sync_dist=True, on_step=True, prog_bar=True)
 
         if self.alpha_kl is not None and self.alpha_kl > 0.0:
             assert self.training_stage > 0
@@ -880,35 +882,64 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 student_labels=labels,
                 temperature=self.kl_temperature,
             )
+            self.log("Train/Loss/KL", kl_loss, sync_dist=True, on_step=True, prog_bar=True)
+
             loss += self.alpha_kl * kl_loss
 
-            self.log("Train/Loss/KL", kl_loss, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Loss/All", loss, sync_dist=True, on_step=True, prog_bar=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
+        
+        if self.trainer.state.fn == "validate":
+            trainer_prefix = 'Val'
+        elif self.trainer.state.fn == "fit":
+            trainer_prefix = 'Val-Fit'
+
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
         input_ids, labels, attention_mask = self.get_inputs_and_labels_fim(token_ids)
 
         with torch.no_grad():
-            logits = self(
+
+            align_loss = torch.tensor(0.0, device=input_ids.device)
+            var_loss = torch.tensor(0.0, device=input_ids.device)
+            kl_loss = torch.tensor(0.0, device=input_ids.device)
+            ce_loss = torch.tensor(0.0, device=input_ids.device)
+            loss = torch.tensor(0.0, device=input_ids.device)
+
+            outputs = self(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 structure_values=structure_ids,
                 structure_attn_mask=structure_attn_mask,
                 structure_pos_idx=structure_pos_idx,
-                num_structure_tokens=num_structure_tokens).logits
-            loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
+                num_structure_tokens=num_structure_tokens)
+            logits = outputs.logits
 
-            # import random
-            # roll = random.randint(1, 1000)
-            # if roll == 1:
-            #     print('logits shape', logits.shape)
-            #     print('vocabs', self.vocab_size, len(self.tokenizer))
+            ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
+            loss += ce_loss
+            self.log(f"{trainer_prefix}/Loss/MLE", ce_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+
+            if self.alpha_align is not None and self.alpha_align > 0.0:
+                projections = outputs.structure_features
+                embeddings = outputs.structure_embeddings
+                proj_flat = projections.view(projections.size(0), -1)   # [B, P*D]
+                embed_flat = embeddings.view(embeddings.size(0), -1)            
+
+                proj_sim = F.cosine_similarity(proj_flat.unsqueeze(1), proj_flat.unsqueeze(0), dim=-1)
+                embed_sim = F.cosine_similarity(embed_flat.unsqueeze(1), embed_flat.unsqueeze(0), dim=-1)
+                align_loss = F.mse_loss(proj_sim, embed_sim)
+                self.log(f"{trainer_prefix}/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+
+                proj_var = projections.var(dim=0).mean()
+                var_loss = F.relu(1e-4 - proj_var)
+                self.log(f"{trainer_prefix}/Loss/Var", var_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+
+                loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
 
             if self.alpha_kl is not None and self.alpha_kl > 0.0:
-                assert self.training_stage > 0
                 teacher_input_ids, teacher_labels, teacher_attention_mask = self.get_inputs_and_labels_fim(batch['teacher_input_ids'])
                 teacher_logits = self(
                     input_ids=teacher_input_ids,
@@ -921,27 +952,19 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     student_labels=labels,
                     temperature=self.kl_temperature,
                 )
-                loss += self.alpha_kl * kl_loss
-                # self.validation_step_loss_kl.append(loss)
+                self.log(f"{trainer_prefix}/Loss/KL", kl_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
-        self.validation_step_loss.append(loss)
-        return loss
+                loss += self.alpha_kl * kl_loss
+
+        self.log(f"{trainer_prefix}/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
+
+        return {"val_ce": ce_loss, 'val_align': align_loss, 'val_var': var_loss, "val_kl": kl_loss, "val_all": loss}
 
     def on_validation_epoch_end(self):
 
         # cleaning up memory
         torch.cuda.empty_cache()
         gc.collect()
-
-        val_loss = torch.stack(self.validation_step_loss).mean()
-        perplexity = torch.exp(val_loss)
-        self.log("Valid/Loss/MLE", val_loss, sync_dist=True, on_epoch=True, prog_bar=True)
-        self.log("Valid/Loss/Perplexity", perplexity, sync_dist=True, on_epoch=True, prog_bar=True)
-        self.validation_step_loss.clear()  # free memory
-        # if self.alpha_kl is not None and self.alpha_kl > 0.0:
-            # val_loss_kl = torch.tensor(self.validation_step_loss_kl).mean()
-            # self.log("Valid/Loss/KL", val_loss_kl, sync_dist=True, on_epoch=True, prog_bar=True)
-            # self.validation_step_loss_kl.clear()  # free memory
 
     def on_after_backward(self):
         with torch.no_grad():

@@ -106,7 +106,7 @@ if __name__ == "__main__":
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
-                                    injector=True)
+                                    injector=False)
 
     if args.model_checkpoint is not None:
         logger.info(f"Loading checkpoint: {args.model_checkpoint}")
@@ -186,6 +186,7 @@ if __name__ == "__main__":
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
+        "num_sanity_val_steps": 0,
         'callbacks': callbacks,
         'logger': [clearml_logger, csv_logger],
         'strategy': DeepSpeedStrategy(config=args.ds_config) \
@@ -205,13 +206,15 @@ if __name__ == "__main__":
         'default_root_dir': args.default_root_dir,
         # 'limit_val_batches': 0.0
     }
+
     trainer = pl.Trainer(**custom_trainer_kwargs)
     logger.warning(f'{trainer.__dict__=}')
 
     model.set_trainer_args(args)
 
-    # trainer.evaluate()
+    trainer.validate(model, datamodule=data)
 
     trainer.fit(model, data)
 
+    trainer.logger._task.close()
     logger.info('Finished training')
