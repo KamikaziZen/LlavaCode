@@ -41,6 +41,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--ds_config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepspeed', 'stage2.json'), help="deepspeed config")
     parser.add_argument("--model_checkpoint", type=str, help='Path to the checkpoint to load')
     parser.add_argument("--projector_checkpoint", type=str, help='Path to trained projector weights')
+    parser.add_argument("--alpha_ce", type=float, help="Coefficient for CrossEntropy loss term")
     parser.add_argument("--alpha_align", type=float, help="Coefficient for alignment loss term")
     parser.add_argument("--alpha_kl", type=float, help="Coefficient for KL-divergence loss term")
     parser.add_argument("--kl_temperature", type=float, help="Temperature coefficient for calculation KL-Divergency loss")

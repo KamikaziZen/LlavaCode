@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 import torch.nn.functional as F
+import warnings
 import math
 import gc
 
@@ -600,6 +601,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         self.alpha_align = self.trainer_args.alpha_align
 
+        self.alpha_ce = self.trainer_args.alpha_ce
+
         if stage == 'fit':
             # Hyperparameters and Configuration
             self.num_nodes = self.trainer_args.num_nodes
@@ -626,9 +629,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             self.world_size = self.trainer_args.devices * self.num_nodes
 
             self.training_stage = self.trainer_args.training_stage
-
-            self.validation_step_loss = []
-            self.validation_step_loss_kl = []
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -801,7 +801,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         fim_middle_id = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)[2]
 
         # Find first occurrence of <|fim_middle|> in each sequence
-        fim_middle_mask = (token_ids == fim_middle_id)
+        fim_middle_mask = (lbl_tensor == fim_middle_id)
         # Convert boolean mask to index positions
         # argmax works because <|fim_middle|> appears exactly once
         middle_pos = fim_middle_mask.float().argmax(dim=1)
@@ -810,7 +810,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         seq_len = lbl_tensor.size(1)
         pos_ids = torch.arange(seq_len, device=lbl_tensor.device).unsqueeze(0)  # [1, seq_len]
 
-        # Mask: keep tokens where position >= middle_pos
+        # Mask: keep tokens where position > middle_pos
         keep_mask = pos_ids > middle_pos.unsqueeze(1)
 
         # Apply mask and pad masking
@@ -845,7 +845,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
         self.log("Train/Loss/MLE", ce_loss, sync_dist=True, on_step=True, prog_bar=True)
 
-        loss += 0.0 * ce_loss
+        loss += self.alpha_ce * ce_loss
 
         if self.alpha_align is not None and self.alpha_align > 0.0:
             projections = outputs.structure_features
@@ -891,11 +891,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         return loss
 
     def validation_step(self, batch, batch_idx):
-        
-        if self.trainer.state.fn == "validate":
-            trainer_prefix = 'Val'
-        elif self.trainer.state.fn == "fit":
-            trainer_prefix = 'Val-Fit'
 
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
@@ -919,23 +914,23 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             logits = outputs.logits
 
             ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-            loss += ce_loss
-            self.log(f"{trainer_prefix}/Loss/MLE", ce_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+            loss += self.alpha_ce * ce_loss
+            self.log("Val/Loss/MLE", ce_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
             if self.alpha_align is not None and self.alpha_align > 0.0:
                 projections = outputs.structure_features
                 embeddings = outputs.structure_embeddings
-                proj_flat = projections.view(projections.size(0), -1)   # [B, P*D]
-                embed_flat = embeddings.view(embeddings.size(0), -1)            
+                proj_flat = projections.view(projections.size(0), -1)  # [B, P*D]
+                embed_flat = embeddings.view(embeddings.size(0), -1)
 
                 proj_sim = F.cosine_similarity(proj_flat.unsqueeze(1), proj_flat.unsqueeze(0), dim=-1)
                 embed_sim = F.cosine_similarity(embed_flat.unsqueeze(1), embed_flat.unsqueeze(0), dim=-1)
                 align_loss = F.mse_loss(proj_sim, embed_sim)
-                self.log(f"{trainer_prefix}/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 proj_var = projections.var(dim=0).mean()
                 var_loss = F.relu(1e-4 - proj_var)
-                self.log(f"{trainer_prefix}/Loss/Var", var_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val/Loss/Var", var_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
 
@@ -952,11 +947,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     student_labels=labels,
                     temperature=self.kl_temperature,
                 )
-                self.log(f"{trainer_prefix}/Loss/KL", kl_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val/Loss/KL", kl_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_kl * kl_loss
 
-        self.log(f"{trainer_prefix}/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
         return {"val_ce": ce_loss, 'val_align': align_loss, 'val_var': var_loss, "val_kl": kl_loss, "val_all": loss}
 
