@@ -894,7 +894,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             # ===== Baseline: greedy decode =====
             greedy_ids = self.generate(
                 input_ids[:, :prompt_len],
-                attention_mask=attention_mask,
+                attention_mask=attention_mask[:, :prompt_len],
                 structure_values=structure_ids,
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=False,
@@ -905,7 +905,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             # ===== Sampled decode (exploration) =====
             sampled_ids = self.generate(
                 input_ids[:, :prompt_len],
-                attention_mask=attention_mask,
+                attention_mask=attention_mask[:, :prompt_len],
                 structure_values=structure_ids,
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
@@ -1013,7 +1013,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 # ===== Baseline: greedy decode =====
                 greedy_ids = self.generate(
                     input_ids[:, :prompt_len],
-                    attention_mask=attention_mask,
+                    attention_mask=attention_mask[:, :prompt_len],
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
@@ -1024,7 +1024,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 # ===== Sampled decode (exploration) =====
                 sampled_ids = self.generate(
                     input_ids[:, :prompt_len],
-                    attention_mask=attention_mask,
+                    attention_mask=attention_mask[:, :prompt_len],
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
@@ -1049,7 +1049,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 # ---- SCST loss ----
                 rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
                 baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
-                advantages = rewards - baselines  # [B]
+                advantages = rewards - baselines
                 scst_loss = -(advantages * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
