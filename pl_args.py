@@ -43,6 +43,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--projector_checkpoint", type=str, help='Path to trained projector weights')
     parser.add_argument("--alpha_ce", type=float, help="Coefficient for CrossEntropy loss term")
     parser.add_argument("--alpha_align", type=float, help="Coefficient for alignment loss term")
+    parser.add_argument("--alpha_scst", type=float, help="Coefficient for SCST loss term")
     parser.add_argument("--alpha_kl", type=float, help="Coefficient for KL-divergence loss term")
     parser.add_argument("--kl_temperature", type=float, help="Temperature coefficient for calculation KL-Divergency loss")
     parser.add_argument("--distill_topk", type=int, help='Top-k token to distill in the self-distillation part')

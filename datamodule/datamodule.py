@@ -33,7 +33,7 @@ class LlavaCodeDataCollator:
             input_ids,
             padding=True,
             return_tensors='pt',
-            padding_side='right'
+            padding_side='left'
         )
 
         # no need in case of fixed num_structure_tokens, but left for compatibility
@@ -52,7 +52,7 @@ class LlavaCodeDataCollator:
                 teacher_input_ids,
                 padding=True,
                 return_tensors='pt',
-                padding_side='right'
+                padding_side='left'
             )
             batch['teacher_input_ids'] = teacher_batch['input_ids']
 

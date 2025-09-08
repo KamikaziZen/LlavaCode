@@ -38,6 +38,7 @@ from .modeling_unixcoder import UniXcoderEncoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
 from .modeling_qwenembed import QwenEmbedEncoder
+
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 
 
@@ -600,7 +601,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.distill_topk = self.trainer_args.distill_topk
 
         self.alpha_align = self.trainer_args.alpha_align
-
+        self.alpha_scst = self.trainer_args.alpha_scst = self.trainer_args.alpha_ce
         self.alpha_ce = self.trainer_args.alpha_ce
 
         if stage == 'fit':
@@ -831,6 +832,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         var_loss = torch.tensor(0.0, device=input_ids.device)
         kl_loss = torch.tensor(0.0, device=input_ids.device)
         ce_loss = torch.tensor(0.0, device=input_ids.device)
+        scst_loss = torch.tensor(0.0, device=input_ids.device)
         loss = torch.tensor(0.0, device=input_ids.device)
 
         assert structure_attn_mask is None and structure_pos_idx is None
@@ -847,7 +849,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         loss += self.alpha_ce * ce_loss
 
-        if self.alpha_align is not None and self.alpha_align > 0.0:
+        if self.alpha_align is not None and self.alpha_align > .0:
             projections = outputs.structure_features
             embeddings = outputs.structure_embeddings
             proj_flat = projections.view(projections.size(0), -1)   # [B, P*D]
@@ -865,7 +867,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
 
-        if self.alpha_kl is not None and self.alpha_kl > 0.0:
+        if self.alpha_kl is not None and self.alpha_kl > .0:
             assert self.training_stage > 0
             with torch.no_grad():
                 self.eval()
@@ -886,9 +888,61 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             loss += self.alpha_kl * kl_loss
 
+        if self.alpha_scst is not None and self.alpha_scst > .0:
+            assert input_ids.shape[0] == 1, 'Change the logic below'
+            prompt_len = input_ids[labels == -100].shape[0] + 1
+            # ===== Baseline: greedy decode =====
+            greedy_ids = self.generate(
+                input_ids[:, :prompt_len],
+                attention_mask=attention_mask,
+                structure_values=structure_ids,
+                num_structure_tokens=num_structure_tokens,
+                max_new_tokens=50, do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+            baseline_rewards = self.cal_exact_match(greedy_ids[0, prompt_len:], labels[labels != -100])
+
+            # ===== Sampled decode (exploration) =====
+            sampled_ids = self.generate(
+                input_ids[:, :prompt_len],
+                attention_mask=attention_mask,
+                structure_values=structure_ids,
+                num_structure_tokens=num_structure_tokens,
+                max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+            sampled_rewards = self.cal_exact_match(sampled_ids[0, prompt_len:], labels[labels != -100])
+
+            # ---- Log probs of sampled tokens ----
+            sampled_input_ids = sampled_ids[:, :-1]
+            sampled_logits = self(
+                input_ids=sampled_input_ids,
+                attention_mask=attention_mask,
+                structure_values=structure_ids,
+                num_structure_tokens=num_structure_tokens).logits
+            log_probs = F.log_softmax(sampled_logits, dim=-1)
+
+            gen_tokens = sampled_ids[:, prompt_len:]
+            gen_logits = log_probs[:, prompt_len-1:, :]
+            seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+            seq_log_prob = seq_log_probs.sum(dim=1)
+
+            # ---- SCST loss ----
+            rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
+            baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
+            advantages = rewards - baselines  # [B]
+            scst_loss = -(advantages * seq_log_prob).mean()
+            self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
+
+            loss += self.alpha_scst * scst_loss
+
         self.log("Train/Loss/All", loss, sync_dist=True, on_step=True, prog_bar=True)
 
         return loss
+
+    def cal_exact_match(self, pred, gold):
+        min_length = min(len(pred), len(gold))
+        return (pred[:min_length] == gold[:min_length]).all()
 
     def validation_step(self, batch, batch_idx):
 
@@ -902,6 +956,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             var_loss = torch.tensor(0.0, device=input_ids.device)
             kl_loss = torch.tensor(0.0, device=input_ids.device)
             ce_loss = torch.tensor(0.0, device=input_ids.device)
+            scst_loss = torch.tensor(0.0, device=input_ids.device)
             loss = torch.tensor(0.0, device=input_ids.device)
 
             outputs = self(
@@ -918,6 +973,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             self.log("Val/Loss/MLE", ce_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
             if self.alpha_align is not None and self.alpha_align > 0.0:
+
                 projections = outputs.structure_features
                 embeddings = outputs.structure_embeddings
                 proj_flat = projections.view(projections.size(0), -1)  # [B, P*D]
@@ -951,9 +1007,57 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
                 loss += self.alpha_kl * kl_loss
 
+            if self.alpha_scst is not None and self.alpha_scst > .0:
+                assert input_ids.shape[0] == 1, 'Change the logic below'
+                prompt_len = input_ids[labels == -100].shape[0] + 1
+                # ===== Baseline: greedy decode =====
+                greedy_ids = self.generate(
+                    input_ids[:, :prompt_len],
+                    attention_mask=attention_mask,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens,
+                    max_new_tokens=50, do_sample=False,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+                baseline_rewards = self.cal_exact_match(greedy_ids[0, prompt_len:], labels[labels != -100])
+
+                # ===== Sampled decode (exploration) =====
+                sampled_ids = self.generate(
+                    input_ids[:, :prompt_len],
+                    attention_mask=attention_mask,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens,
+                    max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+                sampled_rewards = self.cal_exact_match(sampled_ids[0, prompt_len:], labels[labels != -100])
+
+                # ---- Log probs of sampled tokens ----
+                sampled_input_ids = sampled_ids[:, :-1]
+                sampled_logits = self(
+                    input_ids=sampled_input_ids,
+                    attention_mask=attention_mask,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens).logits
+                log_probs = F.log_softmax(sampled_logits, dim=-1)
+
+                gen_tokens = sampled_ids[:, prompt_len:]
+                gen_logits = log_probs[:, prompt_len-1:, :]
+                seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+                seq_log_prob = seq_log_probs.sum(dim=1)
+
+                # ---- SCST loss ----
+                rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
+                baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
+                advantages = rewards - baselines  # [B]
+                scst_loss = -(advantages * seq_log_prob).mean()
+                self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
+
+                loss += self.alpha_scst * scst_loss
+
         self.log("Val/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
-        return {"val_ce": ce_loss, 'val_align': align_loss, 'val_var': var_loss, "val_kl": kl_loss, "val_all": loss}
+        return {"val_ce": ce_loss, 'val_align': align_loss, 'val_var': var_loss, "val_kl": kl_loss, "val_scst": scst_loss, "val_all": loss}
 
     def on_validation_epoch_end(self):
 
