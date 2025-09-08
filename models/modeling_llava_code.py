@@ -1051,7 +1051,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
                 advantages = rewards - baselines  # [B]
                 scst_loss = -(advantages * seq_log_prob).mean()
-                self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
+                self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss
 
