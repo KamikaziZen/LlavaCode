@@ -900,48 +900,84 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 max_new_tokens=50, do_sample=False,
                 pad_token_id=self.tokenizer.eos_token_id
             )
-            baseline_rewards = self.cal_exact_match(greedy_ids[0, prompt_len:], labels[labels != -100])
+            greedy_reward = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
 
-            # ===== Sampled decode (exploration) =====
-            sampled_ids = self.generate(
-                input_ids[:, :prompt_len],
-                attention_mask=attention_mask[:, :prompt_len],
+            # ---- Log probs of greedy tokens ----
+            greedy_input_ids = greedy_ids[:, :-1]
+            greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+            greedy_logits = self(
+                input_ids=greedy_input_ids,
+                attention_mask=greedy_attention_mask,
                 structure_values=structure_ids,
-                num_structure_tokens=num_structure_tokens,
-                max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
-                pad_token_id=self.tokenizer.eos_token_id
-            )
-            sampled_rewards = self.cal_exact_match(sampled_ids[0, prompt_len:], labels[labels != -100])
+                num_structure_tokens=num_structure_tokens
+            ).logits
+            log_probs = F.log_softmax(greedy_logits, dim=-1)
 
-            # ---- Log probs of sampled tokens ----
-            sampled_input_ids = sampled_ids[:, :-1]
-            sampled_attention_mask = (sampled_input_ids != self.pad_token_id).long()
-            sampled_logits = self(
-                input_ids=sampled_input_ids,
-                attention_mask=sampled_attention_mask,
-                structure_values=structure_ids,
-                num_structure_tokens=num_structure_tokens).logits
-            log_probs = F.log_softmax(sampled_logits, dim=-1)
-
-            gen_tokens = sampled_ids[:, prompt_len:]
+            gen_tokens = greedy_ids[:, prompt_len:]
             gen_logits = log_probs[:, prompt_len-1:, :]
             seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
             seq_log_prob = seq_log_probs.sum(dim=1)
 
-            # ---- SCST loss ----
-            rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
-            baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
-            advantages = rewards - baselines  # [B]
-            scst_loss = -(advantages * seq_log_prob).mean()
-            self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
+            # ---- Greedy-imitation loss ----
+            scst_loss = -(greedy_reward * seq_log_prob).mean()
+            self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
+
+        # if self.alpha_scst is not None and self.alpha_scst > .0:
+        #     assert input_ids.shape[0] == 1, 'Change the logic below'
+        #     prompt_len = input_ids[labels == -100].shape[0] + 1
+        #     # ===== Baseline: greedy decode =====
+        #     greedy_ids = self.generate(
+        #         input_ids[:, :prompt_len],
+        #         attention_mask=attention_mask[:, :prompt_len],
+        #         structure_values=structure_ids,
+        #         num_structure_tokens=num_structure_tokens,
+        #         max_new_tokens=50, do_sample=False,
+        #         pad_token_id=self.tokenizer.eos_token_id
+        #     )
+        #     baseline_rewards = self.cal_exact_match(greedy_ids[0, prompt_len:], labels[labels != -100])
+
+        #     # ===== Sampled decode (exploration) =====
+        #     sampled_ids = self.generate(
+        #         input_ids[:, :prompt_len],
+        #         attention_mask=attention_mask[:, :prompt_len],
+        #         structure_values=structure_ids,
+        #         num_structure_tokens=num_structure_tokens,
+        #         max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
+        #         pad_token_id=self.tokenizer.eos_token_id
+        #     )
+        #     sampled_rewards = self.cal_exact_match(sampled_ids[0, prompt_len:], labels[labels != -100])
+
+        #     # ---- Log probs of sampled tokens ----
+        #     sampled_input_ids = sampled_ids[:, :-1]
+        #     sampled_attention_mask = (sampled_input_ids != self.pad_token_id).long()
+        #     sampled_logits = self(
+        #         input_ids=sampled_input_ids,
+        #         attention_mask=sampled_attention_mask,
+        #         structure_values=structure_ids,
+        #         num_structure_tokens=num_structure_tokens).logits
+        #     log_probs = F.log_softmax(sampled_logits, dim=-1)
+
+        #     gen_tokens = sampled_ids[:, prompt_len:]
+        #     gen_logits = log_probs[:, prompt_len-1:, :]
+        #     seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+        #     seq_log_prob = seq_log_probs.sum(dim=1)
+
+        #     # ---- SCST loss ----
+        #     rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
+        #     baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
+        #     advantages = rewards - baselines  # [B]
+        #     scst_loss = -(advantages * seq_log_prob).mean()
+        #     self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
+
+        #     loss += self.alpha_scst * scst_loss
 
         self.log("Train/Loss/All", loss, sync_dist=True, on_step=True, prog_bar=True)
 
         return loss
 
-    def cal_exact_match(self, pred, gold):
+    def similarity_measure(self, pred, gold):
         min_length = min(len(pred), len(gold))
         return (pred[:min_length] == gold[:min_length]).all()
 
@@ -1020,42 +1056,78 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     max_new_tokens=50, do_sample=False,
                     pad_token_id=self.tokenizer.eos_token_id
                 )
-                baseline_rewards = self.cal_exact_match(greedy_ids[0, prompt_len:], labels[labels != -100])
+                greedy_reward = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
 
-                # ===== Sampled decode (exploration) =====
-                sampled_ids = self.generate(
-                    input_ids[:, :prompt_len],
-                    attention_mask=attention_mask[:, :prompt_len],
+                # ---- Log probs of greedy tokens ----
+                greedy_input_ids = greedy_ids[:, :-1]
+                greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                greedy_logits = self(
+                    input_ids=greedy_input_ids,
+                    attention_mask=greedy_attention_mask,
                     structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens,
-                    max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-                sampled_rewards = self.cal_exact_match(sampled_ids[0, prompt_len:], labels[labels != -100])
+                    num_structure_tokens=num_structure_tokens
+                ).logits
+                log_probs = F.log_softmax(greedy_logits, dim=-1)
 
-                # ---- Log probs of sampled tokens ----
-                sampled_input_ids = sampled_ids[:, :-1]
-                sampled_attention_mask = (sampled_input_ids != self.pad_token_id).long()
-                sampled_logits = self(
-                    input_ids=sampled_input_ids,
-                    attention_mask=sampled_attention_mask,
-                    structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens).logits
-                log_probs = F.log_softmax(sampled_logits, dim=-1)
-
-                gen_tokens = sampled_ids[:, prompt_len:]
+                gen_tokens = greedy_ids[:, prompt_len:]
                 gen_logits = log_probs[:, prompt_len-1:, :]
                 seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
                 seq_log_prob = seq_log_probs.sum(dim=1)
 
-                # ---- SCST loss ----
-                rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
-                baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
-                advantages = rewards - baselines
-                scst_loss = -(advantages * seq_log_prob).mean()
+                # ---- Greedy-imitation loss ----
+                scst_loss = -(greedy_reward * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss
+
+            # if self.alpha_scst is not None and self.alpha_scst > .0:
+            #     assert input_ids.shape[0] == 1, 'Change the logic below'
+            #     prompt_len = input_ids[labels == -100].shape[0] + 1
+            #     # ===== Baseline: greedy decode =====
+            #     greedy_ids = self.generate(
+            #         input_ids[:, :prompt_len],
+            #         attention_mask=attention_mask[:, :prompt_len],
+            #         structure_values=structure_ids,
+            #         num_structure_tokens=num_structure_tokens,
+            #         max_new_tokens=50, do_sample=False,
+            #         pad_token_id=self.tokenizer.eos_token_id
+            #     )
+            #     baseline_rewards = self.cal_exact_match(greedy_ids[0, prompt_len:], labels[labels != -100])
+
+            #     # ===== Sampled decode (exploration) =====
+            #     sampled_ids = self.generate(
+            #         input_ids[:, :prompt_len],
+            #         attention_mask=attention_mask[:, :prompt_len],
+            #         structure_values=structure_ids,
+            #         num_structure_tokens=num_structure_tokens,
+            #         max_new_tokens=50, do_sample=True, top_p=0.9, temperature=1.0,
+            #         pad_token_id=self.tokenizer.eos_token_id
+            #     )
+            #     sampled_rewards = self.cal_exact_match(sampled_ids[0, prompt_len:], labels[labels != -100])
+
+            #     # ---- Log probs of sampled tokens ----
+            #     sampled_input_ids = sampled_ids[:, :-1]
+            #     sampled_attention_mask = (sampled_input_ids != self.pad_token_id).long()
+            #     sampled_logits = self(
+            #         input_ids=sampled_input_ids,
+            #         attention_mask=sampled_attention_mask,
+            #         structure_values=structure_ids,
+            #         num_structure_tokens=num_structure_tokens).logits
+            #     log_probs = F.log_softmax(sampled_logits, dim=-1)
+
+            #     gen_tokens = sampled_ids[:, prompt_len:]
+            #     gen_logits = log_probs[:, prompt_len-1:, :]
+            #     seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+            #     seq_log_prob = seq_log_probs.sum(dim=1)
+
+            #     # ---- SCST loss ----
+            #     rewards = torch.tensor(sampled_rewards, device=seq_log_prob.device, dtype=torch.float)
+            #     baselines = torch.tensor(baseline_rewards, device=seq_log_prob.device, dtype=torch.float)
+            #     advantages = rewards - baselines
+            #     scst_loss = -(advantages * seq_log_prob).mean()
+            #     self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+
+            #     loss += self.alpha_scst * scst_loss
 
         self.log("Val/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
