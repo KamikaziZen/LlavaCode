@@ -915,9 +915,10 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             # ---- Log probs of sampled tokens ----
             sampled_input_ids = sampled_ids[:, :-1]
+            sampled_attention_mask = (sampled_input_ids != self.pad_token_id).long()
             sampled_logits = self(
                 input_ids=sampled_input_ids,
-                attention_mask=attention_mask,
+                attention_mask=sampled_attention_mask,
                 structure_values=structure_ids,
                 num_structure_tokens=num_structure_tokens).logits
             log_probs = F.log_softmax(sampled_logits, dim=-1)
@@ -1034,9 +1035,10 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
                 # ---- Log probs of sampled tokens ----
                 sampled_input_ids = sampled_ids[:, :-1]
+                sampled_attention_mask = (sampled_input_ids != self.pad_token_id).long()
                 sampled_logits = self(
                     input_ids=sampled_input_ids,
-                    attention_mask=attention_mask,
+                    attention_mask=sampled_attention_mask,
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens).logits
                 log_probs = F.log_softmax(sampled_logits, dim=-1)
