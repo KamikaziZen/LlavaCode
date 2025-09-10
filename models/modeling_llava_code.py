@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 import torch.nn.functional as F
+import editdistance
 import warnings
 import math
 import gc
@@ -920,7 +921,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             # ---- Greedy-imitation loss ----
             scst_loss = -(greedy_reward * seq_log_prob).mean()
-            self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+            self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
 
@@ -978,8 +979,20 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         return loss
 
     def similarity_measure(self, pred, gold):
-        min_length = min(len(pred), len(gold))
-        return (pred[:min_length] == gold[:min_length]).all()
+        import re
+        skip_tokens = [
+            "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
+            "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
+        ]
+        pattern = "|".join(skip_tokens)
+
+        pred_text = self.tokenizer.decode(pred, skip_special_tokens=True)
+        gold_text = self.tokenizer.decode(gold, skip_special_tokens=True)
+        pred_text = re.sub(pattern, "", pred_text)
+        gold_text = re.sub(pattern, "", gold_text)
+        return 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
+        # min_length = min(len(pred), len(gold))
+        # return (pred[:min_length] == gold[:min_length]).all()
 
     def validation_step(self, batch, batch_idx):
 
