@@ -986,10 +986,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         ]
         pattern = "|".join(skip_tokens)
 
-        pred_text = self.tokenizer.decode(pred, skip_special_tokens=True)
+        pred_text = self.tokenizer.decode(pred, skip_special_tokens=True).split('\n')[0] # 1st line
         gold_text = self.tokenizer.decode(gold, skip_special_tokens=True)
         pred_text = re.sub(pattern, "", pred_text)
-        gold_text = re.sub(pattern, "", gold_text)
         return 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
         # min_length = min(len(pred), len(gold))
         # return (pred[:min_length] == gold[:min_length]).all()
@@ -1070,6 +1069,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     pad_token_id=self.tokenizer.eos_token_id
                 )
                 greedy_reward = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
+                self.log("Val/Acc/ES", greedy_reward, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 # ---- Log probs of greedy tokens ----
                 greedy_input_ids = greedy_ids[:, :-1]
