@@ -73,13 +73,13 @@ class Qwen3Dataset(Dataset):
 
         else:
 
-            # preliminary truncating to save memory and avoid warnings
-            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
-            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
-            target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt').input_ids[0]
+            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt').input_ids[0]
+            truncated_truth = self.data[ind]['content']['groundtruth'].split("\n")[0]
+            target_ids = self.code_tokenizer(truncated_truth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
 
-            tgt_len = len(target_ids)
-            lr_budget = self.max_seq_length - tgt_len - self.num_structure_tokens - 3  # 3 tokens for FIM
+            # tgt_len = len(target_ids)
+            lr_budget = self.max_seq_length - 50 - self.num_structure_tokens - 3  # 3 tokens for FIM, 50 for line completion
             rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
             lc_budget = int(rc_budget * self.lc_rc_ratio)
 
@@ -90,7 +90,6 @@ class Qwen3Dataset(Dataset):
             for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
-
                 structure_ids.extend(F.pad(cfc_ids, (0, self.max_structure_length-len(cfc_ids)), value=self.structure_tokenizer.pad_token_id))
             structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
@@ -99,20 +98,20 @@ class Qwen3Dataset(Dataset):
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('# Relevant examples:', return_tensors='pt').input_ids[0],
+                self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
                 torch.tensor([self.structure_token_id] * self.num_structure_tokens),
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
             # for KL-div training
             all_cfc = '\n'.join(self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('# Relevant examples:', return_tensors='pt').input_ids[0],
                 all_cfc_ids,
                 fim_middle_id,
                 target_ids]).to(torch.long)

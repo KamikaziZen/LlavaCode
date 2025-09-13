@@ -31,6 +31,7 @@ import editdistance
 import warnings
 import math
 import gc
+import re
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
@@ -72,15 +73,6 @@ def get_kl_loss(teacher_logits, student_logits, student_labels, teacher_labels, 
     # kl_loss = kl_loss / student_logits_selected.size(0)  # average per valid token
 
     return kl_loss
-
-
-def calculate_accuracy(logits, labels):
-    # bs = 1
-    shift_logits = logits[:, :-1, :]
-    labels = labels[:, 1:]
-    predictions = torch.argmax(shift_logits, dim=-1)
-    correct = (predictions == labels).float()
-    return correct.mean().item()
 
 
 class LlavaCodeConfig(PretrainedConfig):
@@ -300,15 +292,14 @@ class LlavaCodePreTrainedModel(PreTrainedModel):
     _supports_attention_backend = True
 
     def _init_weights(self, module):
-        pass
-        # std = getattr(self.config, "initializer_range", self.config.get_text_config().initializer_range)
+        std = getattr(self.config, "initializer_range", self.config.get_text_config().initializer_range)
 
-        # if isinstance(module, nn.Linear):
-        #     module.weight.data.normal_(mean=0.0, std=std)
-        #     if module.bias is not None:
-        #         module.bias.data.zero_()
-        # elif isinstance(module, LlavaCodeModel):
-        #     embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, LlavaCodeModel):
+            embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
 
 
 class LlavaCodeModel(LlavaCodePreTrainedModel):
@@ -602,7 +593,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.distill_topk = self.trainer_args.distill_topk
 
         self.alpha_align = self.trainer_args.alpha_align
-        self.alpha_scst = self.trainer_args.alpha_scst = self.trainer_args.alpha_ce
+        self.alpha_scst = self.trainer_args.alpha_scst
         self.alpha_ce = self.trainer_args.alpha_ce
 
         if stage == 'fit':
@@ -834,6 +825,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         kl_loss = torch.tensor(0.0, device=input_ids.device)
         ce_loss = torch.tensor(0.0, device=input_ids.device)
         scst_loss = torch.tensor(0.0, device=input_ids.device)
+        em = torch.tensor(0.0, device=input_ids.device)
+        es = torch.tensor(0.0, device=input_ids.device)
         loss = torch.tensor(0.0, device=input_ids.device)
 
         assert structure_attn_mask is None and structure_pos_idx is None
@@ -901,7 +894,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 max_new_tokens=50, do_sample=False,
                 pad_token_id=self.tokenizer.eos_token_id
             )
-            greedy_reward = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
+            em, es = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
+            self.log("Train/Acc/EM", em, sync_dist=True, on_step=True, prog_bar=True)
+            self.log("Train/Acc/ES", es, sync_dist=True, on_step=True, prog_bar=True)
 
             # ---- Log probs of greedy tokens ----
             greedy_input_ids = greedy_ids[:, :-1]
@@ -920,7 +915,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             seq_log_prob = seq_log_probs.sum(dim=1)
 
             # ---- Greedy-imitation loss ----
-            scst_loss = -(greedy_reward * seq_log_prob).mean()
+            scst_loss = -(em * seq_log_prob).mean()
             self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
@@ -979,7 +974,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         return loss
 
     def similarity_measure(self, pred, gold):
-        import re
+        if max(len(pred), len(gold)) == 0:
+            return 1.0  # both empty → perfect match
         skip_tokens = [
             "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
             "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
@@ -987,11 +983,22 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         pattern = "|".join(skip_tokens)
 
         pred_text = self.tokenizer.decode(pred, skip_special_tokens=True).split('\n')[0] # 1st line
-        gold_text = self.tokenizer.decode(gold, skip_special_tokens=True)
-        pred_text = re.sub(pattern, "", pred_text)
-        return 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
-        # min_length = min(len(pred), len(gold))
-        # return (pred[:min_length] == gold[:min_length]).all()
+        gold_text = self.tokenizer.decode(gold, skip_special_tokens=True).strip()  # already 1 line
+        pred_text = re.sub(pattern, "", pred_text).strip()
+        es = 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
+
+        def tokenize_code(code):
+            code = re.sub(r"([^A-Za-z0-9_])", r" \1 ", code)
+            code = re.sub(r"([a-z])([A-Z])", r"\1 \2", code)
+            code = re.sub(r"\s+", " ", code)
+            code = code.replace('"', "`")
+            code = code.replace("'", "`")
+            tokens = [t for t in code.split(" ") if t]
+            return tokens
+
+        em = (tokenize_code(pred_text) == tokenize_code(gold_text))
+
+        return em, es
 
     def validation_step(self, batch, batch_idx):
 
@@ -1006,6 +1013,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             kl_loss = torch.tensor(0.0, device=input_ids.device)
             ce_loss = torch.tensor(0.0, device=input_ids.device)
             scst_loss = torch.tensor(0.0, device=input_ids.device)
+            em = torch.tensor(0.0, device=input_ids.device)
+            es = torch.tensor(0.0, device=input_ids.device)
             loss = torch.tensor(0.0, device=input_ids.device)
 
             outputs = self(
@@ -1066,10 +1075,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
-                    pad_token_id=self.tokenizer.eos_token_id
+                    # pad_token_id=self.tokenizer.eos_token_id
                 )
-                greedy_reward = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
-                self.log("Val/Acc/ES", greedy_reward, sync_dist=True, on_epoch=True, prog_bar=True)
+                em, es = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
+                self.log("Val/Acc/EM", em, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val/Acc/ES", es, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 # ---- Log probs of greedy tokens ----
                 greedy_input_ids = greedy_ids[:, :-1]
@@ -1088,7 +1098,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 seq_log_prob = seq_log_probs.sum(dim=1)
 
                 # ---- Greedy-imitation loss ----
-                scst_loss = -(greedy_reward * seq_log_prob).mean()
+                scst_loss = -(es * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss
@@ -1144,7 +1154,14 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         self.log("Val/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
-        return {"val_ce": ce_loss, 'val_align': align_loss, 'val_var': var_loss, "val_kl": kl_loss, "val_scst": scst_loss, "val_all": loss}
+        return {"val_ce": ce_loss, 
+                "val_align": align_loss, 
+                "val_var": var_loss, 
+                "val_kl": kl_loss, 
+                "val_em": em,
+                "val_es": es, 
+                "val_scst": scst_loss, 
+                "val_all": loss}
 
     def on_validation_epoch_end(self):
 

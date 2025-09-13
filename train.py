@@ -114,9 +114,9 @@ if __name__ == "__main__":
             args.model_checkpoint, config=configuration)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
-    # if args.projector_checkpoint:
-    #     print('Loading projection weighs')
-    #     model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
+    if args.projector_checkpoint:
+        print('Loading projection weighs')
+        model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
 
     # Stage 0: only projection is trained on entropy loss
     # Stage 1: only projection is trained on entropy loss and KL loss
@@ -215,6 +215,10 @@ if __name__ == "__main__":
     trainer.validate(model, datamodule=data)
 
     trainer.fit(model, data)
+
+    save_path = os.path.join(f'lightning_logs/{args.exp_name}', f"projector_weights_{args.max_epochs}ep.pt")
+    torch.save(model.multi_modal_projector.state_dict(), save_path)
+    logger.info(f"Saved weights to {save_path}")
 
     trainer.logger._task.close()
     logger.info('Finished training')

@@ -48,6 +48,7 @@ def prepare_prompt(args,
     fim_prefix, fim_suffix, fim_middle = fim_tokens
 
     if args.data_prefix == 'code_cfc_uxc':
+        assert False
         # splitting context into chunks
         # one chunk for one file
         lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
@@ -83,7 +84,7 @@ def prepare_prompt(args,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Relevant examples:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
         # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
@@ -104,7 +105,7 @@ def prepare_prompt(args,
             elif skip:  # skipping the file path
                 skip = False
             elif line:
-                current_lines.append(line.strip())
+                current_lines.append(line)
         if current_lines:
             chunks.append('\n'.join(current_lines))
 
@@ -114,15 +115,21 @@ def prepare_prompt(args,
 
         structure_ids = []
         for cfc in chunks:
-            cfc_tokens = structure_tokenizer.tokenize(cfc)
-            cfc_tokens = cfc_tokens[:args.max_structure_length]
-            chunk_ids = structure_tokenizer.convert_tokens_to_ids(cfc_tokens)
-            structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
+            cfc_ids = structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=args.max_structure_length).input_ids[0]
+            structure_ids.extend(F.pad(cfc_ids, (0, args.max_structure_length-len(cfc_ids)), value=structure_tokenizer.pad_token_id))
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
-        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
-        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}# Relevant examples:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
+
+        lr_budget = args.max_seq_length - args.gen_length - 3  # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+
+        # left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+        # right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
@@ -162,7 +169,7 @@ def prepare_prompt(args,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
 
@@ -185,8 +192,13 @@ def prepare_prompt(args,
 
     elif args.data_prefix == 'default':
 
-        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length):])
-        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
+        lr_budget = args.max_seq_length - args.gen_length - 3 # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+
         prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
 
         return prompt, None, None
@@ -195,36 +207,20 @@ def prepare_prompt(args,
 
         assert crossfile_cxt is not None
 
-        lines = crossfile_cxt.splitlines()
-        skip = False
-        current_lines = []
-        chunks = []
-        for line in lines[1:]:
-            if line.startswith('# the below code fragment can be found in:'):
-                skip = True
-                if current_lines:
-                    chunks.append('\n'.join(current_lines))
-                current_lines = [line.strip()]
-            elif skip:  # skipping the file path
-                skip = False
-                current_lines.append(line.strip())
-            elif line:
-                current_lines.append(line.strip())
-        if current_lines:
-            chunks.append('\n'.join(current_lines))
-        # restrict number of injection tokens (RAG files)
-        num_injection_tokens = min(args.num_structure_tokens, len(chunks))
-        chunks = chunks[:num_injection_tokens]
-        crossfile_cxt = '\n\n'.join(lines[:1] + chunks)
+        # making the same lr_budget as for other experiments, not considering cfc length
+        lr_budget = args.max_seq_length - args.gen_length - 3 # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
 
-        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - args.right_context_length - args.cfc_seq_length):])
-        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode('\n\n' + crossfile_cxt)[:args.cfc_seq_length])
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+
+        crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode(crossfile_cxt)[:args.cfc_seq_length])
         if 'starcoder' in args.text_model_id.lower():
             prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
         elif 'qwen' in args.text_model_id.lower():
-            prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
-            # prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+            # prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
+            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
 
         return prompt, None, None
 
@@ -256,12 +252,13 @@ def build_dataset(args, code_tokenizer, ast_tokenizer, fim_tokens):
 
 
 def remove_tokens(s, tokens=["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>", "<|im_start|>", "<|im_end|>"]):
-    indexes = [s.find(token) for token in tokens]
-    valid_indexes = [idx for idx in indexes if idx != -1]
-    if valid_indexes:
-        return s[:min(valid_indexes)]
-    else:
-        return s
+    import re
+    skip_tokens = [
+        "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
+        "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
+    ]
+    pattern = "|".join(skip_tokens)
+    return re.sub(pattern, "", s)
 
 
 if __name__ == "__main__":
@@ -293,12 +290,14 @@ if __name__ == "__main__":
     parser.add_argument("--compute_cceval_metric", type=lambda x: bool(int(x)), help="use cceval metric")
     parser.add_argument("--data_prefix", type=str, help="Determines data preprocessing")
     parser.add_argument('--config', type=str, help='path to args config')
+    parser.add_argument("--do_sample", action='store_true')
+    parser.add_argument("--lc_rc_ratio", default=2.0)
 
     args = parser.parse_args()
     print('Input args:', args)
 
     code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
-    code_tokenizer.add_tokens(['<CODE_STRUCTURE>'])
+    code_tokenizer.add_tokens([STRUCTURE_TOKEN])
     if code_tokenizer.pad_token_id is None:  # case with starcoder
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
     structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
@@ -318,7 +317,7 @@ if __name__ == "__main__":
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
-                                    injector=True)
+                                    injector=False)
     print('tokenizer shapes:', code_tokenizer.vocab_size, len(code_tokenizer))  # delete later
 
     if args.model_checkpoint:
@@ -356,21 +355,17 @@ if __name__ == "__main__":
                 num_structure_tokens = entry['num_structure_tokens'].to(device)
                 cur_pred = model.generate(
                     **inputs,
-                    use_cache=True,
-                    do_sample=False,
+                    do_sample=args.do_sample,
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
-                    max_new_tokens=args.gen_length,
-                    bad_words_ids=[[configuration.structure_token_id]])
+                    max_new_tokens=args.gen_length)
 
             else:
 
                 cur_pred = model.generate(
                     **inputs,
-                    use_cache=True,
-                    do_sample=False,
-                    max_new_tokens=args.gen_length,
-                    bad_words_ids=[[configuration.structure_token_id]])
+                    do_sample=args.do_sample,
+                    max_new_tokens=args.gen_length)
 
             prediction = code_tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
 
