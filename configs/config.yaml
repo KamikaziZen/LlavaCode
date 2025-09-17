@@ -1,0 +1,117 @@
+defaults:
+  - _self_
+  - override hydra/sweeper: optuna
+  - override hydra/sweeper/sampler: tpe
+
+clearml_project_folder: LlavaCode_hydra   # CHANGE
+
+model:
+  text_model_id: "Qwen/Qwen2.5-Coder-1.5B"
+  structure_model_id: "Qwen/Qwen3-Embedding-0.6B"
+  num_structure_tokens: 10
+
+  # objective & regularization
+  loss: mle
+  dropout_layers: -1
+  dropout_p: 0.0
+  functional_dropout: false
+  full_sequence_code_completion_loss: false
+  debug_disable_adding_new_token: false
+  lr_scheduler_type: linear
+
+data:
+  # Data & dataloader
+  data_prefix: code_cfc_qwen
+  train_datadir: "/home/jovyan/cherniuk/LlavaCode/processed_1500k/train" # CHANGE
+  valid_datadir: "/home/jovyan/cherniuk/LlavaCode/processed_1500k/valid" # CHANGE
+
+  # batch sizes
+  train_batch_size: 2     # CHANGE
+  valid_batch_size: 2     # CHANGE
+
+  num_workers: 96      
+
+trainer:
+  seed: 1235
+  accelerator: gpu
+  devices: 2            # CHANGE
+  num_nodes: 1          # CHANGE
+  precision: "bf16-mixed"
+  use_deepspeed: false
+  ds_config: "/home/jovyan/kamikazi/LlavaCode/deepspeed/stage2.json"  # CHANGE
+
+  log_every_n_steps: 200
+  val_check_interval: 0.05      # in part of epoch or in update steps
+  accumulate_grad_batches: 1
+  max_steps: -1
+  max_epochs: 3
+  # save_step_frequency:
+
+  gradient_clip_val: 1.0
+  debug_cuda_mem: false
+
+  training_stage: 1
+
+  model_checkpoint: null
+  projector_checkpoint: null
+
+  # extra optimizer/schedule passed through to the model
+  warmup_steps: 300
+  weight_decay: 0.0
+  kl_temperature: 1.0
+  track_steps: false
+  num_training_examples: -1
+  distill_topk: null
+
+  # просто чтобы прочекать, для отладки
+  fast_dev_run: null           # set to true or an int for N batches for train/val/test
+  limit_train_batches: null    # float in (0,1] or int
+  limit_val_batches: null
+  limit_test_batches: null
+  overfit_batches: null
+
+# early stopping
+early_stopping:
+  enabled: true
+  patience: 10      # остановка, если 10 проверки валидации подряд без улучшения
+  min_delta: 0.0
+
+# Hyperparameters to tune with Optuna
+training:
+  lr: 1e-3
+  alpha_ce: 1.0
+  alpha_align: 0.0
+  alpha_scst: 0.0
+  alpha_kl: 0.0
+
+logging:
+  exp_name: qwen1.5b_test
+  default_root_dir: "./logs/"  # CHANGE
+  save_top_k: 1
+  checkpoint_every_n_steps: 0
+
+# optuna
+optuna:
+  monitor: "Val/Acc/ES"
+  mode: "max"
+  direction: "maximize"
+
+hydra:
+  sweeper:
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      multivariate: true
+      # seed: 42
+    direction: ${optuna.direction}
+    study_name: llavacode_sweep
+    storage: null
+    n_trials: 24
+    n_jobs: 1
+
+    params:
+      training.lr: tag(log, interval(1e-5, 1e-3))
+      trainer.accumulate_grad_batches: choice(4, 8, 16) ########
+      training.alpha_ce: interval(0.0, 1.0)
+      training.alpha_align: interval(0.0, 1.0)
+      training.alpha_scst: interval(0.0, 1.0)
+      training.alpha_kl: interval(0.0, 1.0)

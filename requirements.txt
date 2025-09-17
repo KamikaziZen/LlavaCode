@@ -255,3 +255,7 @@ zipp @ file:///home/conda/feedstock_root/build_artifacts/zipp_1726248574750/work
 zope.event==5.0
 zope.interface==7.1.0
 zstandard @ file:///croot/zstandard_1728569189425/work
+
+hydra-core
+hydra-optuna-sweeper
+clearml
