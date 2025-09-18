@@ -26,8 +26,8 @@ data:
   valid_datadir: "/home/jovyan/cherniuk/LlavaCode/processed_1500k/valid" # CHANGE
 
   # batch sizes
-  train_batch_size: 2     # CHANGE
-  valid_batch_size: 2     # CHANGE
+  train_batch_size: ${trainer.devices} 
+  valid_batch_size: ${trainer.devices}
 
   num_workers: 96      
 
