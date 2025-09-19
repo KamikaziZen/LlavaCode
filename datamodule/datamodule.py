@@ -95,7 +95,7 @@ class LlavaCodeDataModule(LightningDataModule):
         logger.info(f"Initializing DataModule w/ train_bs={self.train_batch_size}, "
                     f"valid_bs={self.valid_batch_size}")
 
-    def get_dataset(self, raw_data):
+    def get_dataset(self, raw_data, num_truth_lines):
         if self.data_prefix == 'ast_lcontext':
             return AstLcontextDataset(
                 raw_data,
@@ -110,6 +110,7 @@ class LlavaCodeDataModule(LightningDataModule):
                 code_tokenizer=self.code_tokenizer,
                 ast_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
+                num_truth_lines=num_truth_lines,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
@@ -120,6 +121,7 @@ class LlavaCodeDataModule(LightningDataModule):
                 code_tokenizer=self.code_tokenizer,
                 ast_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
+                num_truth_lines=num_truth_lines,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
@@ -130,6 +132,7 @@ class LlavaCodeDataModule(LightningDataModule):
                 code_tokenizer=self.code_tokenizer,
                 structure_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
+                num_truth_lines=num_truth_lines,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
@@ -140,6 +143,7 @@ class LlavaCodeDataModule(LightningDataModule):
                 code_tokenizer=self.code_tokenizer,
                 structure_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
+                num_truth_lines=num_truth_lines,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
                 max_structure_length=512)
@@ -176,8 +180,8 @@ class LlavaCodeDataModule(LightningDataModule):
         valid_orig_data = load_from_disk(self.valid_datadir)
         # valid_orig_data = valid_orig_data.select(range(100))  # for debugging
 
-        self.train_data = self.get_dataset(train_orig_data)
-        self.valid_data = self.get_dataset(valid_orig_data)
+        self.train_data = self.get_dataset(train_orig_data, num_truth_lines=100)  # training on 1-9 lines
+        self.valid_data = self.get_dataset(valid_orig_data, num_truth_lines=1)  # validating on 1 line
 
         logger.info(f'Loaded Train data with {len(self.train_data)} examples')
         logger.info(f"train_bs={self.train_batch_size}\t "

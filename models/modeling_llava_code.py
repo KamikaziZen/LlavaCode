@@ -152,53 +152,57 @@ class LlavaCodeConfig(PretrainedConfig):
         self.injector = injector
 
 
-# class LlavaCodeMultiModalProjector(nn.Module):
-#     def __init__(self, config: LlavaCodeConfig):
-#         super().__init__()
-#         self.linear_1 = nn.Linear(
-#             config.structure_config.hidden_size,
-#             config.text_config.hidden_size * 4,
-#             bias=config.multimodal_projector_bias,
-#         )
-#         self.act = ACT2FN[config.projector_hidden_act]
-#         self.linear_2 = nn.Linear(
-#             config.text_config.hidden_size * 4, config.text_config.hidden_size * 4, bias=config.multimodal_projector_bias
-#         )
-#         self.linear_3 = nn.Linear(
-#             config.text_config.hidden_size * 4, config.text_config.hidden_size, bias=config.multimodal_projector_bias
-#         )
-
-#     def forward(self, structure_features):
-#         hidden_states = self.linear_1(structure_features)
-#         hidden_states = self.act(hidden_states)
-#         hidden_states = self.linear_2(hidden_states)
-#         hidden_states = self.act(hidden_states)
-#         hidden_states = self.linear_3(hidden_states)
-#         return hidden_states
-
-
 class LlavaCodeMultiModalProjector(nn.Module):
     def __init__(self, config: LlavaCodeConfig):
         super().__init__()
         self.linear_1 = nn.Linear(
             config.structure_config.hidden_size,
-            config.text_config.hidden_size,
+            config.text_config.hidden_size * 2,
             bias=config.multimodal_projector_bias,
         )
         self.act = ACT2FN[config.projector_hidden_act]
         self.linear_2 = nn.Linear(
-            config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
+            config.text_config.hidden_size * 2, config.text_config.hidden_size * 2, bias=config.multimodal_projector_bias
         )
-        self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
-        # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
+        self.linear_3 = nn.Linear(
+            config.text_config.hidden_size * 2, config.text_config.hidden_size, bias=config.multimodal_projector_bias
+        )
+        self.ln_1 = nn.LayerNorm(config.text_config.hidden_size * 2)
+        self.ln_2 = nn.LayerNorm(config.text_config.hidden_size * 2)
 
     def forward(self, structure_features):
         hidden_states = self.linear_1(structure_features)
         hidden_states = self.act(hidden_states)
         hidden_states = self.ln_1(hidden_states)
         hidden_states = self.linear_2(hidden_states)
-        # hidden_states = self.ln_2(hidden_states)
+        hidden_states = self.act(hidden_states)
+        hidden_states = self.ln_2(hidden_states)
+        hidden_states = self.linear_3(hidden_states)
         return hidden_states
+
+
+# class LlavaCodeMultiModalProjector(nn.Module):
+#     def __init__(self, config: LlavaCodeConfig):
+#         super().__init__()
+#         self.linear_1 = nn.Linear(
+#             config.structure_config.hidden_size,
+#             config.text_config.hidden_size,
+#             bias=config.multimodal_projector_bias,
+#         )
+#         self.act = ACT2FN[config.projector_hidden_act]
+#         self.linear_2 = nn.Linear(
+#             config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
+#         )
+#         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
+#         # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
+
+#     def forward(self, structure_features):
+#         hidden_states = self.linear_1(structure_features)
+#         hidden_states = self.act(hidden_states)
+#         hidden_states = self.ln_1(hidden_states)
+#         hidden_states = self.linear_2(hidden_states)
+#         # hidden_states = self.ln_2(hidden_states)
+#         return hidden_states
 
 
 class ResidualInjector(nn.Module):
@@ -846,11 +850,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         if self.alpha_align is not None and self.alpha_align > .0:
             projections = outputs.structure_features
             embeddings = outputs.structure_embeddings
-            proj_flat = projections.view(projections.size(0), -1)   # [B, P*D]
-            embed_flat = embeddings.view(embeddings.size(0), -1)
+            # proj_flat = projections.view(projections.size(0), -1)
+            # embed_flat = embeddings.view(embeddings.size(0), -1)
 
-            proj_sim = F.cosine_similarity(proj_flat.unsqueeze(1), proj_flat.unsqueeze(0), dim=-1)
-            embed_sim = F.cosine_similarity(embed_flat.unsqueeze(1), embed_flat.unsqueeze(0), dim=-1)
+            proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
+            embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
 
             align_loss = F.mse_loss(proj_sim, embed_sim)
             self.log("Train/Loss/Align", align_loss, sync_dist=True, on_step=True, prog_bar=True)
@@ -915,7 +919,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             seq_log_prob = seq_log_probs.sum(dim=1)
 
             # ---- Greedy-imitation loss ----
-            scst_loss = -(em * seq_log_prob).mean()
+            scst_loss = -((es+em) * seq_log_prob).mean()
             self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
@@ -1034,11 +1038,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
                 projections = outputs.structure_features
                 embeddings = outputs.structure_embeddings
-                proj_flat = projections.view(projections.size(0), -1)  # [B, P*D]
-                embed_flat = embeddings.view(embeddings.size(0), -1)
 
-                proj_sim = F.cosine_similarity(proj_flat.unsqueeze(1), proj_flat.unsqueeze(0), dim=-1)
-                embed_sim = F.cosine_similarity(embed_flat.unsqueeze(1), embed_flat.unsqueeze(0), dim=-1)
+                proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
+                embed_sim = F.cosine_similarity(embedddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
                 align_loss = F.mse_loss(proj_sim, embed_sim)
                 self.log("Val/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
@@ -1098,7 +1100,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 seq_log_prob = seq_log_probs.sum(dim=1)
 
                 # ---- Greedy-imitation loss ----
-                scst_loss = -(es * seq_log_prob).mean()
+                scst_loss = -((es+em) * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss
