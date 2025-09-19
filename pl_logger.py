@@ -11,7 +11,8 @@ class ClearMLLogger:
     def __init__(self, project_name, task_name, tags):
         super().__init__()
         self.task_name = task_name
-        self._task = Task.init(project_name=project_name, task_name=task_name, tags=tags)
+        self._task = Task.init(project_name=project_name, task_name=task_name, tags=tags,
+                               reuse_last_task_id=False)   
         self._logger = self._task.get_logger()
         # self._all_metrics = []
 
