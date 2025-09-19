@@ -41,7 +41,7 @@ trainer:
   ds_config: "/home/jovyan/kamikazi/LlavaCode/deepspeed/stage2.json"  # CHANGE
 
   log_every_n_steps: 200
-  val_check_interval: 0.05      # in part of epoch or in update steps
+  val_check_interval: 0.004      # in part of epoch or in update steps
   accumulate_grad_batches: 1
   max_steps: -1
   max_epochs: 3
@@ -81,7 +81,7 @@ training:
   lr: 1e-3
   alpha_ce: 1.0
   alpha_align: 0.0
-  alpha_scst: 0.0
+  alpha_scst: 0.001
   alpha_kl: 0.0
 
 logging:
@@ -110,8 +110,8 @@ hydra:
 
     params:
       training.lr: tag(log, interval(1e-5, 1e-3))
-      trainer.accumulate_grad_batches: choice(4, 8, 16) ########
+      trainer.accumulate_grad_batches: choice(1) ########
       training.alpha_ce: interval(0.0, 1.0)
       training.alpha_align: interval(0.0, 1.0)
-      training.alpha_scst: interval(0.0, 1.0)
+      training.alpha_scst: interval(0.001, 1.0)
       training.alpha_kl: interval(0.0, 1.0)
