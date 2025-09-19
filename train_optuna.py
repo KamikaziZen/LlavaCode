@@ -344,6 +344,8 @@ def main(cfg: DictConfig) -> float:
 
     # Loggers
     tags = [cfg.model.text_model_id.split('/')[-1], cfg.model.structure_model_id.split('/')[-1]]
+    cfg.logging.exp_name += f"_{cfg.training.lr}lr_{cfg.trainer.devices * trainer.accumulate_grad_batches}b"
+    cfg.logging.exp_name += f"_ce{cfg.training.alpha_ce}_al{training.alpha_align}_scst{training.alpha_scst}_kl{training.alpha_kl}"
     clearml_logger = ClearMLLogger(project_name=cfg.clearml_project_folder, task_name=cfg.logging.exp_name, tags=tags)
     csv_logger = CSVLogger(save_dir="lightning_logs/", name=cfg.logging.exp_name, version="")
 
