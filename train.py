@@ -34,41 +34,41 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-class CheckpointEveryNSteps(pl.Callback):
-    """
-    Save a checkpoint every N steps, instead of Lightning's default that checkpoints
-    based on validation loss.
-    """
+# class CheckpointEveryNSteps(pl.Callback):
+#     """
+#     Save a checkpoint every N steps, instead of Lightning's default that checkpoints
+#     based on validation loss.
+#     """
 
-    def __init__(
-        self,
-        save_step_frequency=5000,
-        prefix="NStep-ckpt",
-        use_modelcheckpoint_filename=False,
-    ):
-        """
-        Args:
-            save_step_frequency: how often to save in steps
-            prefix: add a prefix to the name, only used if
-                use_modelcheckpoint_filename=False
-            use_modelcheckpoint_filename: just use the ModelCheckpoint callback's
-                default filename, don't use ours.
-        """
-        self.save_step_frequency = save_step_frequency
-        self.prefix = prefix
-        self.use_modelcheckpoint_filename = use_modelcheckpoint_filename
+#     def __init__(
+#         self,
+#         save_step_frequency=5000,
+#         prefix="NStep-ckpt",
+#         use_modelcheckpoint_filename=False,
+#     ):
+#         """
+#         Args:
+#             save_step_frequency: how often to save in steps
+#             prefix: add a prefix to the name, only used if
+#                 use_modelcheckpoint_filename=False
+#             use_modelcheckpoint_filename: just use the ModelCheckpoint callback's
+#                 default filename, don't use ours.
+#         """
+#         self.save_step_frequency = save_step_frequency
+#         self.prefix = prefix
+#         self.use_modelcheckpoint_filename = use_modelcheckpoint_filename
 
-    def on_batch_end(self, trainer: pl.Trainer, _):
-        """ Check if we should save a checkpoint after every train batch """
-        epoch = trainer.current_epoch
-        global_step = trainer.global_step
-        if (global_step > 0) and global_step % self.save_step_frequency == 0:
-            if self.use_modelcheckpoint_filename:
-                filename = trainer.checkpoint_callback.filename
-            else:
-                filename = f"{self.prefix}_{epoch=}_{global_step=}.ckpt"
-            ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
-            trainer.save_checkpoint(ckpt_path)
+#     def on_batch_end(self, trainer: pl.Trainer, _):
+#         """ Check if we should save a checkpoint after every train batch """
+#         epoch = trainer.current_epoch
+#         global_step = trainer.global_step
+#         if (global_step > 0) and global_step % self.save_step_frequency == 0:
+#             if self.use_modelcheckpoint_filename:
+#                 filename = trainer.checkpoint_callback.filename
+#             else:
+#                 filename = f"{self.prefix}_{epoch=}_{global_step=}.ckpt"
+#             ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
+#             trainer.save_checkpoint(ckpt_path)
 
 
 if __name__ == "__main__":
@@ -171,14 +171,14 @@ if __name__ == "__main__":
 
     callbacks = []
     callbacks = [LearningRateMonitor(logging_interval='step')]
-    # checkpoint_callback = ModelCheckpoint(
-    #     save_top_k=1,
-    #     monitor="Valid/Loss/MLE",
-    #     mode="min",
-    #     every_n_train_steps=args.save_step_frequency
-    # )
-    # callbacks.append(checkpoint_callback)
-    # callbacks.append(CheckpointEveryNSteps(save_step_frequency=args.save_step_frequency))
+    checkpoint_callback = ModelCheckpoint(
+        save_top_k=1,
+        monitor="Val_Acc_EM",
+        save_last=False,
+        mode="max",
+        filename="{epoch}-{step}-metric={Val_Acc_EM:.4f}",
+    )
+    callbacks.append(checkpoint_callback)
 
     tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1]]
     clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=tags)
