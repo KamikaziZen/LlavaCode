@@ -850,8 +850,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         if self.alpha_align is not None and self.alpha_align > .0:
             projections = outputs.structure_features
             embeddings = outputs.structure_embeddings
-            # proj_flat = projections.view(projections.size(0), -1)
-            # embed_flat = embeddings.view(embeddings.size(0), -1)
 
             proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
             embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
@@ -919,7 +917,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             seq_log_prob = seq_log_probs.sum(dim=1)
 
             # ---- Greedy-imitation loss ----
-            scst_loss = -((es+em) * seq_log_prob).mean()
+            scst_loss = -((em+es) * seq_log_prob).mean()
             self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
@@ -977,18 +975,29 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         return loss
 
-    def similarity_measure(self, pred, gold):
+    def similarity_measure(self, pred, gold, strip=False):
         if max(len(pred), len(gold)) == 0:
             return 1.0  # both empty → perfect match
         skip_tokens = [
-            "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
-            "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
-        ]
+            r"<\|fim_prefix\|>", r"<\|fim_middle\|>", r"<\|fim_suffix\|>", r"<\|fim_pad\|>",
+            r"<\|repo_name\|>", r"<\|file_sep\|>", r"<\|im_start\|>", r"<\|im_end\|>"]
         pattern = "|".join(skip_tokens)
 
-        pred_text = self.tokenizer.decode(pred, skip_special_tokens=True).split('\n')[0] # 1st line
-        gold_text = self.tokenizer.decode(gold, skip_special_tokens=True).strip()  # already 1 line
-        pred_text = re.sub(pattern, "", pred_text).strip()
+        gold_text = self.tokenizer.decode(gold, skip_special_tokens=True)
+        num_lines = len(gold_text.split('\n'))
+
+        # ids out of tokenizer vocab might occur
+        pred_tokens = self.tokenizer.convert_ids_to_tokens(pred)
+        pred_tokens = [t for t in pred_tokens if t is not None] 
+        pred_text = self.tokenizer.convert_tokens_to_string(pred_tokens)
+
+        pred_text = "\n".join(pred_text.split('\n')[:num_lines])
+        pred_text = re.sub(pattern, "", pred_text)
+
+        if strip:  # only strip during validation
+            pred_text = pred_text.strip()
+            gold_text = gold_text.strip()
+
         es = 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
 
         def tokenize_code(code):
@@ -1040,7 +1049,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 embeddings = outputs.structure_embeddings
 
                 proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
-                embed_sim = F.cosine_similarity(embedddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
+                embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
                 align_loss = F.mse_loss(proj_sim, embed_sim)
                 self.log("Val/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
@@ -1079,9 +1088,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     max_new_tokens=50, do_sample=False,
                     # pad_token_id=self.tokenizer.eos_token_id
                 )
-                em, es = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
-                self.log("Val/Acc/EM", em, sync_dist=True, on_epoch=True, prog_bar=True)
-                self.log("Val/Acc/ES", es, sync_dist=True, on_epoch=True, prog_bar=True)
+                em, es = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100], strip=True)
+                self.log("Val_Acc_EM", em, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val_Acc_ES", es, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 # ---- Log probs of greedy tokens ----
                 greedy_input_ids = greedy_ids[:, :-1]
@@ -1100,7 +1109,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 seq_log_prob = seq_log_probs.sum(dim=1)
 
                 # ---- Greedy-imitation loss ----
-                scst_loss = -((es+em) * seq_log_prob).mean()
+                scst_loss = -((em+es) * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss

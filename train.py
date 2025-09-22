@@ -176,7 +176,7 @@ if __name__ == "__main__":
         monitor="Val_Acc_EM",
         save_last=False,
         mode="max",
-        filename="{epoch}-{step}-metric={Val_Acc_EM:.4f}",
+        filename="{epoch}-{step}-{Val_Acc_EM:.4f}-{Val_Acc_ES:.4f}",
     )
     callbacks.append(checkpoint_callback)
 
