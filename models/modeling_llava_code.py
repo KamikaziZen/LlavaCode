@@ -201,7 +201,6 @@ class LlavaCodeMultiModalProjector(nn.Module):
 #         hidden_states = self.act(hidden_states)
 #         hidden_states = self.ln_1(hidden_states)
 #         hidden_states = self.linear_2(hidden_states)
-#         # hidden_states = self.ln_2(hidden_states)
 #         return hidden_states
 
 
@@ -987,7 +986,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         num_lines = len(gold_text.split('\n'))
 
         # ids out of tokenizer vocab might occur
-        pred_tokens = self.tokenizer.convert_ids_to_tokens(pred)
+        pred_tokens = self.tokenizer.convert_ids_to_tokens(pred, skip_special_tokens=True)
         pred_tokens = [t for t in pred_tokens if t is not None] 
         pred_text = self.tokenizer.convert_tokens_to_string(pred_tokens)
 
