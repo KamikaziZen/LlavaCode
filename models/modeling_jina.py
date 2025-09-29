@@ -11,6 +11,10 @@ class JinaEncoder(nn.Module):
         self.model = model
         self.config = config
 
+    @property
+    def device(self):
+        return self.model.device
+
     def mean_pooling(self, model_output, attention_mask):
         token_embeddings = model_output[0]  # last hidden state
         mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()

@@ -19,6 +19,10 @@ class UniXcoderEncoder(nn.Module):
         self.pooling = pooling
         self.normalize = normalize
 
+    @property
+    def device(self):
+        return self.model.device
+
     def forward(self, input_ids, pooling=None):
         if pooling is None:
             pooling = self.pooling

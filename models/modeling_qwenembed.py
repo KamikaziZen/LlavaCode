@@ -12,6 +12,10 @@ class QwenEmbedEncoder(nn.Module):
         self.model = model
         self.config = config
 
+    @property
+    def device(self):
+        return self.model.device
+
     def last_token_pool(self, last_hidden_states: Tensor, attention_mask: Tensor, left_padding=True) -> Tensor:
         # left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
         if left_padding:
