@@ -6,6 +6,7 @@ from transformers import (
     AutoTokenizer,
     PretrainedConfig,
     GenerationMixin,
+    BitsAndBytesConfig,
     CONFIG_MAPPING
 )
 
@@ -129,6 +130,7 @@ class LlavaCodeConfig(PretrainedConfig):
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
+        quantize=False,
         injector=False,
         **kwargs,
     ):
@@ -145,10 +147,16 @@ class LlavaCodeConfig(PretrainedConfig):
 
         self.text_config = text_config
 
+        if quantize:
+            self.quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+        else:
+            self.quantization_config = {}
+
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
         self.structure_token_id = structure_token_id
         self.pad_token_id = pad_token_id  # has to go after super() init
+
         self.injector = injector
 
 
@@ -169,6 +177,10 @@ class LlavaCodeMultiModalProjector(nn.Module):
         )
         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size * 2)
         self.ln_2 = nn.LayerNorm(config.text_config.hidden_size * 2)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
 
     def forward(self, structure_features):
         hidden_states = self.linear_1(structure_features)
@@ -195,6 +207,10 @@ class LlavaCodeMultiModalProjector(nn.Module):
 #         )
 #         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
 #         # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
+
+    # @property
+    # def device(self):
+    #     return next(self.model.parameters()).device
 
 #     def forward(self, structure_features):
 #         hidden_states = self.linear_1(structure_features)
@@ -333,7 +349,16 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         print('before post_init', self.multi_modal_projector.linear_1.weight.data.norm(2))
 
         self.vocab_size = config.text_config.vocab_size
-        self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
+
+        if self.config.quantization_config:
+            self.language_model = AutoModel.from_pretrained(
+                self.config.text_config.model_id,
+                quantization_config=self.config.quantization_config,
+                device_map=None,
+                low_cpu_mem_usage=True
+            )
+        else:
+            self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
 
         if config.injector:
             self.injector = ResidualInjector(num_layers=len(self.language_model.layers))

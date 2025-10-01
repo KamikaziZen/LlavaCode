@@ -65,6 +65,7 @@ def add_model_args(parent_parser):
     parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--weight_decay", type=float, default=0., help="L2 regularization")
+    parser.add_argument("--quantize", action="store_true", help="Quantization of model weights")
     # dataloading
     parser.add_argument("--train_batch_size", type=int, default=64, help="Batch size for training combined across all devices.")
     parser.add_argument("--valid_batch_size", type=int, default=64, help="Batch size for validation combined across all devices.")
