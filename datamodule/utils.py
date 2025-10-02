@@ -2,7 +2,7 @@ import torch
 from .const import FIMMAP
 
 
-def get_fim_tokens(model_id)
+def get_fim_tokens(model_id):
     if 'qwen2.5' in model_id.lower():
         fim_tokens = FIMMAP['qwen2.5']
     elif 'starcoder' in model_id.lower():
