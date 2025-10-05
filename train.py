@@ -21,6 +21,7 @@ from models import LlavaCodeConfig,  LlavaCodeForConditionalGeneration
 from pl_args import add_model_args, add_pl_args, add_program_args
 from datamodule import LlavaCodeDataModule
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
+from datamodule.utils import get_fim_tokens
 from pl_logger import ClearMLLogger
 
 load_dotenv()
@@ -32,43 +33,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S')
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-# class CheckpointEveryNSteps(pl.Callback):
-#     """
-#     Save a checkpoint every N steps, instead of Lightning's default that checkpoints
-#     based on validation loss.
-#     """
-
-#     def __init__(
-#         self,
-#         save_step_frequency=5000,
-#         prefix="NStep-ckpt",
-#         use_modelcheckpoint_filename=False,
-#     ):
-#         """
-#         Args:
-#             save_step_frequency: how often to save in steps
-#             prefix: add a prefix to the name, only used if
-#                 use_modelcheckpoint_filename=False
-#             use_modelcheckpoint_filename: just use the ModelCheckpoint callback's
-#                 default filename, don't use ours.
-#         """
-#         self.save_step_frequency = save_step_frequency
-#         self.prefix = prefix
-#         self.use_modelcheckpoint_filename = use_modelcheckpoint_filename
-
-#     def on_batch_end(self, trainer: pl.Trainer, _):
-#         """ Check if we should save a checkpoint after every train batch """
-#         epoch = trainer.current_epoch
-#         global_step = trainer.global_step
-#         if (global_step > 0) and global_step % self.save_step_frequency == 0:
-#             if self.use_modelcheckpoint_filename:
-#                 filename = trainer.checkpoint_callback.filename
-#             else:
-#                 filename = f"{self.prefix}_{epoch=}_{global_step=}.ckpt"
-#             ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
-#             trainer.save_checkpoint(ckpt_path)
 
 
 if __name__ == "__main__":
@@ -106,21 +70,27 @@ if __name__ == "__main__":
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
+                                    quantize=args.quantize,
                                     injector=False)
 
     if args.model_checkpoint is not None:
         logger.info(f"Loading checkpoint: {args.model_checkpoint}")
         model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
             args.model_checkpoint, config=configuration)
+        # model = LlavaCodeForConditionalGeneration(configuration)
+        # ckpt = torch.load(args.model_checkpoint, map_location="cpu")
+        # state_dict = ckpt["state_dict"]
+        # projector_state_dict = {
+        #     k.replace("model.multi_modal_projector.", ""): v
+        #     for k, v in state_dict.items()
+        #     if k.startswith("model.multi_modal_projector.")}
+        # model.multi_modal_projector.load_state_dict(projector_state_dict)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
     if args.projector_checkpoint:
         print('Loading projection weighs')
         model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
 
-    # Stage 0: only projection is trained on entropy loss
-    # Stage 1: only projection is trained on entropy loss and KL loss
-    # Stage 2: projection and llm are trained on entropy loss
     # structure model weights are always frozen
     for p in model.model.structure_model.parameters():
         p.requires_grad = False
@@ -128,14 +98,8 @@ if __name__ == "__main__":
     if args.training_stage == 0 or args.training_stage == 1 or args.training_stage == 2:
         for p in model.model.language_model.parameters():
             p.requires_grad = False
-
-    # unfreezing Q and V of the first attention block
-    # if args.training_stage == 0 or args.training_stage == 1:
-    #     for name, p in model.named_parameters():
-    #         if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.query'):
-    #             p.requires_grad = True
-    #         if name.startswith('model.structure_model.model.encoder.layer.0.attention.self.value'):
-    #             p.requires_grad = True
+        for p in model.lm_head.parameters():
+            p.requires_grad = False
 
     trainable_params, all_params = 0, 0
     for name, param in model.named_parameters():
@@ -157,7 +121,7 @@ if __name__ == "__main__":
         args.valid_datadir,
         args.train_batch_size,
         args.valid_batch_size,
-        fim_tokens=model.model.fim_tokens,
+        fim_tokens=get_fim_tokens(args.text_model_id),
         training_stage=args.training_stage,
         num_workers=args.num_workers,
         code_tokenizer=code_tokenizer,
@@ -211,14 +175,12 @@ if __name__ == "__main__":
     logger.warning(f'{trainer.__dict__=}')
 
     model.set_trainer_args(args)
+    logger.info('Initialized trainer')
 
     trainer.validate(model, datamodule=data)
+    logger.ingo('Finished validation')
 
     trainer.fit(model, data)
-
-    save_path = os.path.join(f'lightning_logs/{args.exp_name}', f"projector_weights_{args.max_epochs}ep.pt")
-    torch.save(model.multi_modal_projector.state_dict(), save_path)
-    logger.info(f"Saved weights to {save_path}")
+    logger.info('Finished training')
 
     trainer.logger._task.close()
-    logger.info('Finished training')
