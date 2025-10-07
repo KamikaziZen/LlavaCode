@@ -178,7 +178,7 @@ if __name__ == "__main__":
     logger.info('Initialized trainer')
 
     trainer.validate(model, datamodule=data)
-    logger.ingo('Finished validation')
+    logger.info('Finished validation')
 
     trainer.fit(model, data)
     logger.info('Finished training')
