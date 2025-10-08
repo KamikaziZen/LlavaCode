@@ -2,6 +2,7 @@ from transformers import (
     PreTrainedModel,
     RobertaForSequenceClassification,
     AutoModel,
+    AutoModelForCausalLM,
     AutoConfig,
     AutoTokenizer,
     PretrainedConfig,
@@ -233,38 +234,39 @@ class ResidualInjector(nn.Module):
             block.register_forward_pre_hook(self.make_hook(i))
 
 
-@dataclass
-class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
-    """
-    Base class for Llava outputs, with hidden states and attentions.
+# @dataclass
+# class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
+#     """
+#     Base class for Llava outputs, with hidden states and attentions.
 
-    Args:
-        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
-            Sequence of hidden-states at the output of the last layer of the model.
-        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-            `(batch_size, num_heads, sequence_length, embed_size_per_head)`)
+#     Args:
+#         last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+#             Sequence of hidden-states at the output of the last layer of the model.
+#         past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+#             Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+#             `(batch_size, num_heads, sequence_length, embed_size_per_head)`)
 
-            Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
-            `past_key_values` input) to speed up sequential decoding.
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+#             Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
+#             `past_key_values` input) to speed up sequential decoding.
+#         hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+#             Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+#             one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
-            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
+#             Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+#         attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+#             Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+#             sequence_length)`.
 
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-        structure_hidden_states (`torch.FloatTensor`, *optional*):
-            A `torch.FloatTensor` of size `(batch_size, num_images, sequence_length, hidden_size)`.
-            structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
-    """
+#             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+#             heads.
+#         structure_hidden_states (`torch.FloatTensor`, *optional*):
+#             A `torch.FloatTensor` of size `(batch_size, num_images, sequence_length, hidden_size)`.
+#             structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
+#     """
 
-    structure_features: Optional[torch.FloatTensor] = None
-    structure_embeddings: Optional[torch.FloatTensor] = None
+#     logits: Optional[torch.FloatTensor] = None
+#     structure_features: Optional[torch.FloatTensor] = None
+#     structure_embeddings: Optional[torch.FloatTensor] = None
 
 
 class LlavaCodePreTrainedModel(PreTrainedModel):
@@ -290,6 +292,47 @@ class LlavaCodePreTrainedModel(PreTrainedModel):
                 module.bias.data.zero_()
         elif isinstance(module, LlavaCodeModel):
             embed_std = 1 / math.sqrt(self.config.text_config.hidden_size)
+
+
+@dataclass
+class LlavaCodeCausalLMOutputWithPast(ModelOutput):
+    """
+    Base class for LlavaNext causal language model (or autoregressive) outputs.
+
+    Args:
+        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+            Language modeling loss (for next-token prediction).
+        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`)
+
+            Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
+            `past_key_values` input) to speed up sequential decoding.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        structure_hidden_states (`torch.FloatTensor`, *optional*):
+            A `torch.FloatTensor` of size (batch_size * num_patches, num_images, sequence_length, hidden_size)`.
+            structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
+    """
+
+    loss: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
+    past_key_values: Optional[List[torch.FloatTensor]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
+    structure_features: Optional[torch.FloatTensor] = None
+    structure_embeddings: Optional[torch.FloatTensor] = None
 
 
 class LlavaCodeModel(LlavaCodePreTrainedModel):
@@ -322,14 +365,14 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         self.vocab_size = config.text_config.vocab_size
 
         if self.config.quantization_config:
-            self.language_model = AutoModel.from_pretrained(
+            self.language_model = AutoModelForCausalLM.from_pretrained(
                 self.config.text_config.model_id,
                 quantization_config=self.config.quantization_config,
                 device_map=None,
                 low_cpu_mem_usage=True
             )
         else:
-            self.language_model = AutoModel.from_pretrained(self.config.text_config.model_id)
+            self.language_model = AutoModelForCausalLM.from_pretrained(self.config.text_config.model_id)
 
         if config.injector:
             self.injector = ResidualInjector(num_layers=len(self.language_model.layers))
@@ -415,7 +458,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[LossKwargs]
-    ) -> Union[Tuple, LlavaCodeModelOutputWithPast]:
+    ) -> Union[Tuple, LlavaCodeCausalLMOutputWithPast]:
         r"""
         """
         # checking if cache is already in use (use_cache=True and iter > 1)
@@ -493,55 +536,15 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             **kwargs
         )
 
-        return LlavaCodeModelOutputWithPast(
-            last_hidden_state=outputs.last_hidden_state,
+        return LlavaCodeCausalLMOutputWithPast(
+            logits=outputs.logits,
+            # last_hidden_state=outputs.last_hidden_state,
             past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
+            # hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             structure_features=structure_features,
             structure_embeddings=structure_embeddings
         )
-
-
-@dataclass
-class LlavaCodeCausalLMOutputWithPast(ModelOutput):
-    """
-    Base class for LlavaNext causal language model (or autoregressive) outputs.
-
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
-            Language modeling loss (for next-token prediction).
-        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
-            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-            `(batch_size, num_heads, sequence_length, embed_size_per_head)`)
-
-            Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
-            `past_key_values` input) to speed up sequential decoding.
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
-
-            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-        structure_hidden_states (`torch.FloatTensor`, *optional*):
-            A `torch.FloatTensor` of size (batch_size * num_patches, num_images, sequence_length, hidden_size)`.
-            structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
-    """
-
-    loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
-    past_key_values: Optional[List[torch.FloatTensor]] = None
-    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-    attentions: Optional[Tuple[torch.FloatTensor]] = None
-    structure_features: Optional[torch.FloatTensor] = None
-    structure_embeddings: Optional[torch.FloatTensor] = None
 
 
 class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixin, LightningModule):
@@ -549,14 +552,14 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         "^language_model.model": "model.language_model",
         "^structure_model": "model.structure_model",
         "^multi_modal_projector": "model.multi_modal_projector",
-        "^language_model.lm_head": "lm_head",
+        # "^language_model.lm_head": "lm_head",
     }
-    _tied_weights_keys = ["lm_head.weight"]
+    # _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config: LlavaCodeConfig):
         super().__init__(config)
         self.model = LlavaCodeModel(config)
-        self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
+        # self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
         self.vocab_size = self.config.text_config.vocab_size
         self.language_model.resize_token_embeddings(self.vocab_size)
@@ -635,10 +638,13 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     def get_decoder(self):
         return self.model
 
-    # Make modules available throught conditional class for BC
     @property
     def language_model(self):
         return self.model.language_model
+
+    @property
+    def lm_head(self):
+        return self.model.language_model.lm_head
 
     @property
     def multi_modal_projector(self):
@@ -696,23 +702,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             **kwargs,
         )
 
-        hidden_states = outputs[0]
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-        loss = None
-        if labels is not None:
-            assert False
-            loss = self.loss_function(
-                logits=logits, labels=labels, vocab_size=self.vocab_size, **kwargs
-            )
-
         return LlavaCodeCausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
+            loss=None,
+            logits=outputs.logits,
             past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
+            # hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             structure_features=outputs.structure_features,
             structure_embeddings=outputs.structure_embeddings
