@@ -562,7 +562,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         # self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
         self.vocab_size = self.config.text_config.vocab_size
-        self.language_model.resize_token_embeddings(self.vocab_size)
+        # self.language_model.resize_token_embeddings(self.vocab_size)
         self.pad_token_id = config.pad_token_id
         self.tokenizer = AutoTokenizer.from_pretrained(config.text_config.model_id, use_fast=False)
         self.tokenizer.add_tokens([STRUCTURE_TOKEN])

@@ -66,7 +66,8 @@ if __name__ == "__main__":
 
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
-    text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
+    assert len(code_tokenizer) <= text_config.vocab_size, 'The tokenizer length is larger than the embedding layer shape, resize the embeddings'
+    # text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
