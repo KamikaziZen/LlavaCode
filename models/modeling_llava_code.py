@@ -880,9 +880,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 max_new_tokens=50, do_sample=False,
                 pad_token_id=self.tokenizer.eos_token_id
             )
-            em, es = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
+            em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
             self.log("Train/Acc/EM", em, sync_dist=True, on_step=True, prog_bar=True)
             self.log("Train/Acc/ES", es, sync_dist=True, on_step=True, prog_bar=True)
+            self.log("Train/Acc/Precision", cum_prec, sync_dist=True, on_step=True, prog_bar=True)
+            self.log("Train/Acc/WJI", wji, sync_dist=True, on_step=True, prog_bar=True)
 
             # ---- Log probs of greedy tokens ----
             greedy_input_ids = greedy_ids[:, :-1]
@@ -901,7 +903,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             seq_log_prob = seq_log_probs.sum(dim=1)
 
             # ---- Greedy-imitation loss ----
-            scst_loss = -((em+es) * seq_log_prob).mean()
+            scst_loss = -((em+es+cum_prec+wji) * seq_log_prob).mean()
             self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
@@ -961,7 +963,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
     def similarity_measure(self, pred, gold, strip=False):
         if max(len(pred), len(gold)) == 0:
-            return 1.0  # both empty → perfect match
+            return 1.0, 1.0, 1.0, 1.0  # both empty → perfect match
         skip_tokens = [
             r"<\|fim_prefix\|>", r"<\|fim_middle\|>", r"<\|fim_suffix\|>", r"<\|fim_pad\|>",
             r"<\|repo_name\|>", r"<\|file_sep\|>", r"<\|im_start\|>", r"<\|im_end\|>"]
@@ -982,6 +984,37 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             pred_text = pred_text.strip()
             gold_text = gold_text.strip()
 
+        ### cumulative precision 1 / L \sum_{i=1}^L P@i
+        def cumulative_precision(s_gold, s_pred):
+            cum_prec = 0.0
+            hits = 0
+            n = len(s_gold)
+            for i in range(n):
+                if i < len(s_pred) and s_gold[i] == s_pred[i]:
+                    hits += 1
+                cum_prec += hits / (i + 1)
+            cum_prec = cum_prec / n
+            return cum_prec
+        
+        def weighted_jaccard(s_gold, s_pred):
+            n = len(s_gold)
+            if n == 0:
+                return 1.0
+
+            weights = 1.0 / torch.arange(1, n + 1, dtype=torch.float32)
+            match_mask = torch.zeros(n, dtype=torch.float32)
+            for i in range(n):
+                if i < len(s_pred) and s_gold[i] == s_pred[i]:
+                    match_mask[i] = 1.0
+
+            intersection = (weights * match_mask).sum()
+            union = weights.sum()
+            
+            return (intersection / union).item()
+        
+        cum_prec = cumulative_precision(gold_text, pred_text)
+        wji = weighted_jaccard(gold_text, pred_text)
+
         es = 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
 
         def tokenize_code(code):
@@ -995,7 +1028,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         em = (tokenize_code(pred_text) == tokenize_code(gold_text))
 
-        return em, es
+        return em, es, cum_prec, wji
 
     def validation_step(self, batch, batch_idx):
 
@@ -1072,9 +1105,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     max_new_tokens=50, do_sample=False,
                     # pad_token_id=self.tokenizer.eos_token_id
                 )
-                em, es = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100], strip=True)
+                em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100], strip=True)
                 self.log("Val_Acc_EM", em, sync_dist=True, on_epoch=True, prog_bar=True)
                 self.log("Val_Acc_ES", es, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val_Acc_Precision", cum_prec, sync_dist=True, on_epoch=True, prog_bar=True)
+                self.log("Val_Acc_WJI", wji, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 # ---- Log probs of greedy tokens ----
                 greedy_input_ids = greedy_ids[:, :-1]
@@ -1093,7 +1128,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 seq_log_prob = seq_log_probs.sum(dim=1)
 
                 # ---- Greedy-imitation loss ----
-                scst_loss = -((em+es) * seq_log_prob).mean()
+                scst_loss = -((em+es+cum_prec+wji) * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss
@@ -1155,6 +1190,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 "val_kl": kl_loss, 
                 "val_em": em,
                 "val_es": es, 
+                "val_precision":cum_prec,
+                "val_wji": wji,
                 "val_scst": scst_loss, 
                 "val_all": loss}
 
