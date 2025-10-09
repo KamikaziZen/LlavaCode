@@ -75,8 +75,10 @@ class Qwen3Dataset(Dataset):
 
         else:
 
-            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt').input_ids[0]
-            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt').input_ids[0]
+            self.code_tokenizer.truncation_side = 'left'  # left context should be truncated from the left side
+            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
+            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             groundtruth = "\n".join(self.data[ind]['content']['groundtruth'].split("\n")[:self.num_truth_lines])
             target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
 
