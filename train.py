@@ -12,6 +12,7 @@ import lightning.pytorch as pl
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.utilities import rank_zero_only
 
 from huggingface_hub import login
 from dotenv import load_dotenv
@@ -146,8 +147,8 @@ if __name__ == "__main__":
     callbacks.append(checkpoint_callback)
 
     tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1]]
-    clearml_logger = ClearMLLogger(project_name='LlavaCode', task_name=args.exp_name, tags=tags)
-    csv_logger = CSVLogger("lightning_logs/", name=args.exp_name, version="")
+    clearml_logger = ClearMLLogger(args.log_dir, project_name='LlavaCode', task_name=args.exp_name, tags=tags)
+    csv_logger = CSVLogger(args.log_dir, name=args.exp_name, version="")
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
@@ -184,4 +185,4 @@ if __name__ == "__main__":
     trainer.fit(model, data)
     logger.info('Finished training')
 
-    trainer.logger._task.close()
+    rank_zero_only(trainer.logger._task.close())

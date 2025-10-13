@@ -6,9 +6,9 @@ import torch
 def add_program_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_prefix", type=str, help="Determines data preprocessing")
-    parser.add_argument("--train_datadir", type=str, help="path to the processed [PyPI + BigQuery] or [Wikitext_103] .arrow dataset")
-    parser.add_argument("--valid_datadir", type=str, help="path to the processed [PyPI + BigQuery] or [Wikitext_103] .arrow dataset")
-    parser.add_argument("--log_dir", type=str, default="../results/", help="Path of the Tensorboard log directory")
+    parser.add_argument("--train_datadir", type=str, help="path to the processed .arrow dataset")
+    parser.add_argument("--valid_datadir", type=str, help="path to the processed .arrow dataset")
+    parser.add_argument("--log_dir", type=str, default="./lightning_logs/", help="Path for the pl Tainer loggers and checkpoints")
     parser.add_argument("--num_workers", type=int, default=8, help="Number of data loading workers")
     parser.add_argument("--seed", type=int, default=42, help="value to seed RNG of torch, numpy")
     parser.add_argument("--track_steps", action="store_true", help="if True, progress bar will track training batches, else will track epochs")
