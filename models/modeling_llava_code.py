@@ -593,6 +593,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.alpha_scst = self.trainer_args.alpha_scst
         self.alpha_ce = self.trainer_args.alpha_ce
 
+        self.reward = self.trainer_args.reward
+
         if stage == 'fit':
             # Hyperparameters and Configuration
             self.num_nodes = self.trainer_args.num_nodes
@@ -903,7 +905,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             seq_log_prob = seq_log_probs.sum(dim=1)
 
             # ---- Greedy-imitation loss ----
-            scst_loss = -((em+es+cum_prec+wji) * seq_log_prob).mean()
+            reward = eval(self.reward)
+            scst_loss = -(reward * seq_log_prob).mean()
             self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
@@ -1128,7 +1131,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 seq_log_prob = seq_log_probs.sum(dim=1)
 
                 # ---- Greedy-imitation loss ----
-                scst_loss = -((em+es+cum_prec+wji) * seq_log_prob).mean()
+                reward = eval(self.reward)
+                scst_loss = -(reward * seq_log_prob).mean()
                 self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_scst * scst_loss
