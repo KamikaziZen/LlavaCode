@@ -1,5 +1,6 @@
 import argparse
 import json
+import os 
 from transformers import (
     AutoTokenizer,
     RobertaTokenizer,
@@ -8,16 +9,24 @@ from transformers import (
 )
 from preprocess import AST
 import torch
+from torch import nn
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.utils.data import DataLoader, DistributedSampler
 import math
 from tqdm import tqdm
+import re
 
 from models import LlavaCodeConfig, LlavaCodeForConditionalGeneration
 from eval_metric import compute_metric_stmt
 from eval_metric_cceval import compute_metric_stmt_cceval
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 
-device = torch.device("cuda:0")
+SKIP_TOKENS = [
+    "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
+    "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
+]
+PATTERN = "|".join(SKIP_TOKENS)
 
 
 def tokenize_patches(tokens, patch_length, tokenizer):
@@ -127,8 +136,6 @@ def prepare_prompt(args,
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
 
-        # left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
-        # right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
         prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_injection_tokens])
@@ -214,13 +221,9 @@ def prepare_prompt(args,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
-
         crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode(crossfile_cxt)[:args.cfc_seq_length])
-        if 'starcoder' in args.text_model_id.lower():
-            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
-        elif 'qwen' in args.text_model_id.lower():
-            # prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
-            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+
+        prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
 
         return prompt, None, None
 
@@ -251,18 +254,7 @@ def build_dataset(args, code_tokenizer, ast_tokenizer, fim_tokens):
     return data
 
 
-def remove_tokens(s, tokens=["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>", "<|im_start|>", "<|im_end|>"]):
-    import re
-    skip_tokens = [
-        "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
-        "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
-    ]
-    pattern = "|".join(skip_tokens)
-    return re.sub(pattern, "", s)
-
-
-if __name__ == "__main__":
-
+def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--text_model_id", type=str, required=True)
@@ -294,39 +286,107 @@ if __name__ == "__main__":
     parser.add_argument("--lc_rc_ratio", default=2.0)
 
     args = parser.parse_args()
+    return args
+
+
+def main_worker(rank, world_size, model, tokenizer, data, args):
+
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['RANK'] = str(rank)
+
+    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+
+    torch.cuda.set_device(rank)
+    device = torch.device(f'cuda:{rank}')
+
+    model = model.to(device)
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+
+    data_per_rank = data[rank::world_size]
+
+    # Process the data in parallel
+    all_preds = []
+    for entry in tqdm(data_per_rank, desc=f"Rank {rank} processing"):
+        with torch.no_grad():
+            inputs = tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
+            cut_at = inputs.input_ids.shape[1]
+
+            # Assuming args.data_prefix and other conditionals are the same
+            if args.data_prefix not in ['default', 'default_cfc']:
+                structure_ids = entry['structure_ids'].to(device)
+                num_structure_tokens = entry['num_structure_tokens'].to(device)
+                cur_pred = model.module.generate(  # Use model.module to access the original model inside DDP
+                    **inputs,
+                    do_sample=args.do_sample,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens,
+                    max_new_tokens=args.gen_length)
+            else:
+                cur_pred = model.module.generate(
+                    **inputs,
+                    do_sample=args.do_sample,
+                    max_new_tokens=args.gen_length)
+
+            prediction = tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
+
+            # Manual removal of special tokens
+            if 'qwen' in args.text_model_id.lower():
+                prediction = re.sub(PATTERN, "", prediction)
+
+            all_preds.append({
+                "task_id": entry["metadata"]["task_id"],
+                "pred": prediction,
+            })
+
+    # Collect results from all GPUs (using all_gather)
+    local_preds = all_preds
+    all_preds = [None for _ in range(world_size)]
+    dist.all_gather_object(all_preds, local_preds)
+
+    # Save results to disk on rank 0
+    if rank == 0:
+        with open(f"{args.output_dir}/prediction.jsonl", "w", encoding="utf-8") as f_pred:
+            for entry in all_preds:
+                if isinstance(entry, list):
+                    for entry_ in entry:
+                        f_pred.write(json.dumps(entry_) + "\n")
+                else:
+                    f_pred.write(json.dumps(entry_) + "\n")
+
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+
+    args = parse_args()
     print('Input args:', args)
 
     code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
     code_tokenizer.add_tokens([STRUCTURE_TOKEN])
-    if code_tokenizer.pad_token_id is None:  # case with starcoder
+    if code_tokenizer.pad_token_id is None:
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
     structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
 
-    structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id)
+    structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id, use_fast=False)
 
     structure_config = AutoConfig.from_pretrained(args.structure_model_id)
     structure_config.model_id = args.structure_model_id
     structure_config.pad_token_id = structure_tokenizer.pad_token_id
+
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
-
-    # TODO: is it possible to include <CODE_STRUCTURE> -> vector mapping without resizing embeddings?
-    # possible implementation: qwen tokens <|repo_name|> and <|file_sep|> tokens
-    # this is necessary for resize_token_embeddings() call
-    text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
+    assert len(code_tokenizer) <= text_config.vocab_size, 'The tokenizer length is larger than the embedding layer shape, resize the embeddings'
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
                                     injector=False)
-    print('tokenizer shapes:', code_tokenizer.vocab_size, len(code_tokenizer))  # delete later
 
-    if args.model_checkpoint:
-        print(f'Loading model from checkpoint: {args.model_checkpoint}')
-        model = LlavaCodeForConditionalGeneration \
-            .load_from_checkpoint(args.model_checkpoint, config=configuration).to(device)
-        print(f'after checkpoint: {model.model.multi_modal_projector.linear_1.weight.data.norm(2)}')
+    if args.model_checkpoint is not None:
+        logger.info(f"Loading checkpoint: {args.model_checkpoint}")
+        model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
+            args.model_checkpoint, config=configuration)
     else:
-        model = LlavaCodeForConditionalGeneration(configuration).to(device)
+        model = LlavaCodeForConditionalGeneration(configuration)
     if args.projector_checkpoint:
         print(f'Loading projection weighs from {args.projector_checkpoint}')
         model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
@@ -341,46 +401,11 @@ if __name__ == "__main__":
     print('fim tokens:', fim_tokens)
     data = build_dataset(args, code_tokenizer, structure_tokenizer, fim_tokens)
 
-    all_preds = []
-    for entry in tqdm(data):
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '29500'
 
-        entropies = []
-        with torch.no_grad():
-
-            inputs = code_tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
-            cut_at = inputs.input_ids.shape[1]
-            if args.data_prefix not in ['default', 'default_cfc']:
-
-                structure_ids = entry['structure_ids'].to(device)
-                num_structure_tokens = entry['num_structure_tokens'].to(device)
-                cur_pred = model.generate(
-                    **inputs,
-                    do_sample=args.do_sample,
-                    structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens,
-                    max_new_tokens=args.gen_length)
-
-            else:
-
-                cur_pred = model.generate(
-                    **inputs,
-                    do_sample=args.do_sample,
-                    max_new_tokens=args.gen_length)
-
-            prediction = code_tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
-
-            # <|fim_pad|>, <|file_sep|>, <|fim_prefix|> are not removed by skip_special_tokens=True, manual removal
-            if 'qwen' in args.text_model_id.lower():
-                prediction = remove_tokens(prediction)
-
-            all_preds.append({
-                "task_id": entry["metadata"]["task_id"],
-                "pred": prediction,
-            })
-
-    with open(f"{args.output_dir}/prediction.jsonl", "w", encoding="utf-8") as f_pred:
-        for entry in all_preds:
-            f_pred.write(json.dumps(entry) + "\n")
+    world_size = torch.cuda.device_count()
+    torch.multiprocessing.spawn(main_worker, nprocs=world_size, args=(world_size, model, code_tokenizer, data, args))
 
     if args.compute_cceval_metric:
         compute_metric_stmt_cceval(args)
