@@ -187,10 +187,8 @@ def process_examples(task, args):
         else:
             print(f'[warning] parsing failed: task_id:{ex["task_id"]}')
     else:
-        # num_target_lines = sum([1 for l in target.split("\n") if l.strip()])
-        num_target_lines = 1
-        # pred_lines = [l for l in prediction.split("\n") if l.strip()][:num_target_lines]
-        pred_lines = prediction.split("\n")[:num_target_lines]
+        num_target_lines = sum([1 for l in target.split("\n") if l.strip()])
+        pred_lines = [l for l in prediction.split("\n") if l.strip()][:num_target_lines]
         prediction = "\n".join(pred_lines)
 
     trunc_s = {
