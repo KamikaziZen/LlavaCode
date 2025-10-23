@@ -29,22 +29,6 @@ SKIP_TOKENS = [
 PATTERN = "|".join(SKIP_TOKENS)
 
 
-def tokenize_patches(tokens, patch_length, tokenizer):
-
-    num_injection_tokens = math.ceil(len(tokens) / patch_length)
-
-    tokens_ids = []
-    for i in range(num_injection_tokens):
-        patch = tokens[i * patch_length: (i + 1) * patch_length]
-        patch_tokens = [tokenizer.cls_token, "<encoder-only>", tokenizer.sep_token] \
-            + patch + [tokenizer.sep_token]
-        patch_ids = tokenizer.convert_tokens_to_ids(patch_tokens)
-        tokens_ids.extend(patch_ids)
-    tokens_ids = torch.tensor(tokens_ids, dtype=torch.long)
-
-    return tokens_ids, num_injection_tokens
-
-
 def prepare_prompt(args,
                    tokenizer,
                    structure_tokenizer,
@@ -78,8 +62,8 @@ def prepare_prompt(args,
             chunks.append('\n'.join(current_lines))
 
         # restrict number of injection tokens (RAG files)
-        num_injection_tokens = min(args.num_structure_tokens, len(chunks))
-        chunks = chunks[:num_injection_tokens]
+        num_structure_tokens = min(args.num_structure_tokens, len(chunks))
+        chunks = chunks[:num_structure_tokens]
 
         structure_ids = []
         for cfc in chunks:
@@ -91,12 +75,12 @@ def prepare_prompt(args,
             structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
-        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_structure_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
-        # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_injection_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
+        # prompt = f"# Here are some relevant code fragments from other files of the repo:{'<CODE_STRUCTURE>' * num_structure_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
 
-        return prompt, structure_ids, torch.tensor([num_injection_tokens])
+        return prompt, structure_ids, torch.tensor([num_structure_tokens])
 
     elif args.data_prefix in ['code_cfc_jina', 'code_cfc_qwen']:
         # splitting context into chunks
@@ -119,8 +103,8 @@ def prepare_prompt(args,
             chunks.append('\n'.join(current_lines))
 
         # restrict number of injection tokens (RAG files)
-        num_injection_tokens = min(args.num_structure_tokens, len(chunks))
-        chunks = chunks[:num_injection_tokens]
+        num_structure_tokens = min(args.num_structure_tokens, len(chunks))
+        chunks = chunks[:num_structure_tokens]
 
         structure_ids = []
         for cfc in chunks:
@@ -136,9 +120,9 @@ def prepare_prompt(args,
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
 
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
 
-        return prompt, structure_ids, torch.tensor([num_injection_tokens])
+        return prompt, structure_ids, torch.tensor([num_structure_tokens])
 
     elif args.data_prefix == 'ast_cfc':
         # splitting context into chunks
@@ -161,8 +145,8 @@ def prepare_prompt(args,
             chunks.append('\n'.join(current_lines))
 
         # restrict number of injection tokens (RAG files)
-        num_injection_tokens = min(args.num_structure_tokens, len(chunks))
-        chunks = chunks[:num_injection_tokens]
+        num_structure_tokens = min(args.num_structure_tokens, len(chunks))
+        chunks = chunks[:num_structure_tokens]
 
         structure_ids = []
         for cfc in chunks:
@@ -174,28 +158,11 @@ def prepare_prompt(args,
             structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
 
-        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_structure_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_injection_tokens}{fim_middle}"
+        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
 
-        return prompt, structure_ids, torch.tensor([num_injection_tokens])
-
-    # elif args.data_prefix == 'codeast_cfc':
-
-    #     structure_tokens = structure_tokenizer.tokenize(crossfile_cxt)
-    #     # AST function ignores comments
-    #     structure_tokens += AST(crossfile_cxt.replace('#', ''), 'python', structure_tokenizer)
-    #     patch_length = args.max_structure_length - 4  # 4 special tokens for unixcoder
-    #     structure_ids, num_injection_tokens = tokenize_patches(structure_tokens, patch_length, structure_tokenizer)
-    #     structure_ids = F.pad(structure_ids,
-    #                           (0, args.max_structure_length * num_injection_tokens - len(structure_ids)),
-    #                           value=structure_tokenizer.pad_token_id)
-
-    #     left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_injection_tokens - args.right_context_length):])
-    #     right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-    #     prompt = f'<fim_prefix>{left_cxt_truncated}' + f'<fim_suffix>{right_cxt_truncated}' + '<CODE_STRUCTURE>' * num_injection_tokens + '<fim_middle>'
-
-    #     return prompt, structure_ids, torch.tensor([num_injection_tokens])
+        return prompt, structure_ids, torch.tensor([num_structure_tokens])
 
     elif args.data_prefix == 'default':
 
