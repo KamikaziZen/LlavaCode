@@ -28,7 +28,7 @@ class QwenEmbedEncoder(nn.Module):
     def forward(self, input_ids):
         attn_mask = input_ids.ne(self.config.pad_token_id)
         outputs = self.model(input_ids=input_ids, attention_mask=attn_mask)
-        embeddings = self.last_token_pool(outputs.last_hidden_state, attn_mask)
+        embeddings = self.last_token_pool(outputs.last_hidden_state, attn_mask, left_padding=False)
         embeddings = F.normalize(embeddings, p=2, dim=1)
 
         return None, embeddings
