@@ -20,13 +20,8 @@ import re
 from models import LlavaCodeConfig, LlavaCodeForConditionalGeneration
 from eval_metric import compute_metric_stmt
 from eval_metric_cceval import compute_metric_stmt_cceval
-from datamodule.const import STRUCTURE_TOKEN, FIMMAP
-
-SKIP_TOKENS = [
-    "<\|fim_prefix\|>", "<\|fim_middle\|>", "<\|fim_suffix\|>", "<\|fim_pad\|>",
-    "<\|repo_name\|>", "<\|file_sep\|>", "<\|im_start\|>", "<\|im_end\|>"
-]
-PATTERN = "|".join(SKIP_TOKENS)
+from datamodule.const import STRUCTURE_TOKEN
+from datamodule.utils import truncate_trash, get_fim_tokens
 
 
 def prepare_prompt(args,
@@ -106,12 +101,10 @@ def prepare_prompt(args,
         num_structure_tokens = min(args.num_structure_tokens, len(chunks))
         chunks = chunks[:num_structure_tokens]
 
-        structure_ids = []
+        structure_ids = torch.empty(0, dtype=torch.long)
         for cfc in chunks:
             cfc_ids = structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=args.max_structure_length).input_ids[0]
-            structure_ids.extend(F.pad(cfc_ids, (0, args.max_structure_length-len(cfc_ids)), value=structure_tokenizer.pad_token_id))
-        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
-
+            structure_ids = torch.hstack([structure_ids, F.pad(cfc_ids, (0, args.max_structure_length-len(cfc_ids)), value=structure_tokenizer.pad_token_id)])
 
         lr_budget = args.max_seq_length - args.gen_length - 3  # 3 tokens for FIM
         rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
@@ -148,15 +141,14 @@ def prepare_prompt(args,
         num_structure_tokens = min(args.num_structure_tokens, len(chunks))
         chunks = chunks[:num_structure_tokens]
 
-        structure_ids = []
+        structure_ids = torch.empty(0, dtype=torch.long)
         for cfc in chunks:
             ast_tokens = AST(cfc.replace('#', ''), 'python', structure_tokenizer)  # decommenting
             ast_tokens = ast_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
             chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
                 + ast_tokens + [structure_tokenizer.sep_token]
             chunk_ids = structure_tokenizer.convert_tokens_to_ids(chunk_tokens)
-            structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id))
-        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
+            structure_ids = torch.hstack([structure_ids, F.pad(torch.tensor(chunk_ids), (0, args.max_structure_length-len(chunk_ids)), value=structure_tokenizer.pad_token_id)])
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_structure_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
@@ -278,7 +270,6 @@ def main_worker(rank, world_size, model, tokenizer, data, args):
             inputs = tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
             cut_at = inputs.input_ids.shape[1]
 
-            # Assuming args.data_prefix and other conditionals are the same
             if args.data_prefix not in ['default', 'default_cfc']:
                 structure_ids = entry['structure_ids'].to(device)
                 num_structure_tokens = entry['num_structure_tokens'].to(device)
@@ -297,12 +288,12 @@ def main_worker(rank, world_size, model, tokenizer, data, args):
             prediction = tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
 
             # Manual removal of special tokens
-            if 'qwen' in args.text_model_id.lower():
-                prediction = re.sub(PATTERN, "", prediction)
+            # if 'qwen' in args.text_model_id.lower():
+            #     prediction = re.sub(PATTERN, "", prediction)
 
             all_preds.append({
                 "task_id": entry["metadata"]["task_id"],
-                "pred": prediction,
+                "pred": truncate_trash(prediction),
             })
 
     # Collect results from all GPUs (using all_gather)
@@ -359,12 +350,7 @@ if __name__ == "__main__":
         model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
     model.eval()
 
-    if 'qwen' in args.text_model_id.lower():
-        fim_tokens = FIMMAP['qwen2.5']
-    elif 'starcoder' in args.text_model_id.lower():
-        fim_tokens = FIMMAP['starcoder']
-    else:
-        raise NotImplementedError('No such model in FIM mapping')
+    fim_tokens = get_fim_tokens(args.text_model_id)
     print('fim tokens:', fim_tokens)
     data = build_dataset(args, code_tokenizer, structure_tokenizer, fim_tokens)
 

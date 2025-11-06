@@ -45,7 +45,7 @@ from .modeling_qwenembed import QwenEmbedEncoder
 from .kl_loss import get_kl_loss
 
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
-from datamodule.utils import get_fim_tokens
+from datamodule.utils import get_fim_tokens, truncate_trash
 
 
 class LlavaCodeConfig(PretrainedConfig):
@@ -180,9 +180,9 @@ class LlavaCodeMultiModalProjector(nn.Module):
 #         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
 #         # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
 
-    # @property
-    # def device(self):
-    #     return next(self.model.parameters()).device
+#     @property
+#     def device(self):
+#         return next(self.model.parameters()).device
 
 #     def forward(self, structure_features):
 #         hidden_states = self.linear_1(structure_features)
@@ -967,10 +967,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     def similarity_measure(self, pred, gold, strip=False):
         if max(len(pred), len(gold)) == 0:
             return 1.0, 1.0, 1.0, 1.0  # both empty → perfect match
-        skip_tokens = [
-            r"<\|fim_prefix\|>", r"<\|fim_middle\|>", r"<\|fim_suffix\|>", r"<\|fim_pad\|>",
-            r"<\|repo_name\|>", r"<\|file_sep\|>", r"<\|im_start\|>", r"<\|im_end\|>"]
-        pattern = "|".join(skip_tokens)
 
         gold_text = self.tokenizer.decode(gold, skip_special_tokens=True)
         num_lines = len(gold_text.split('\n'))
@@ -979,9 +975,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         pred_tokens = self.tokenizer.convert_ids_to_tokens(pred, skip_special_tokens=True)
         pred_tokens = [t for t in pred_tokens if t is not None] 
         pred_text = self.tokenizer.convert_tokens_to_string(pred_tokens)
+        pred_text = truncate_trash(pred_text)  # truncating everyting after the first transh token
 
         pred_text = "\n".join(pred_text.split('\n')[:num_lines])
-        pred_text = re.sub(pattern, "", pred_text)
 
         if strip:  # only strip during validation
             pred_text = pred_text.strip()
