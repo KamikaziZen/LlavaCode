@@ -42,7 +42,7 @@ class Qwen3Dataset(Dataset):
         self.training_stage = training_stage
         self.expand_factor = 1
         if self.training_stage == 0:
-            self.expand_factor = len(self.data[0]['content']['crossfile_array'])
+            self.expand_factor = len(self.data[0].get('content', self.data[0])['crossfile_array'])
 
     def __len__(self):
 
@@ -57,7 +57,7 @@ class Qwen3Dataset(Dataset):
             orig_ind = ind // self.expand_factor
             sub_ind = ind % self.expand_factor
 
-            chunk = self.data[orig_ind]['content']['crossfile_array'][sub_ind]
+            chunk = self.data[orig_ind].get('content', self.data[orig_ind])['crossfile_array'][sub_ind]
             cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
             cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
 
@@ -75,11 +75,12 @@ class Qwen3Dataset(Dataset):
 
         else:
 
+            content = self.data[ind].get('content', self.data[ind])  # kostyl for stackv1 and stackv2 compatibility
             self.code_tokenizer.truncation_side = 'left'  # left context should be truncated from the left side
-            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            left_context_ids = self.code_tokenizer(content['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
-            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
-            groundtruth = "\n".join(self.data[ind]['content']['groundtruth'].split("\n")[:self.num_truth_lines])
+            right_context_ids = self.code_tokenizer(content['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            groundtruth = "\n".join(content['groundtruth'].split("\n")[:self.num_truth_lines])
             target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
 
             # tgt_len = len(target_ids)
@@ -91,7 +92,7 @@ class Qwen3Dataset(Dataset):
             right_context_ids = right_context_ids[:rc_budget]
 
             structure_ids = torch.empty(0, dtype=torch.long)
-            for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
+            for chunk in content['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
                 structure_ids = torch.hstack([structure_ids, F.pad(cfc_ids, (0, self.max_structure_length-len(cfc_ids)), value=self.structure_tokenizer.pad_token_id)])
@@ -107,7 +108,7 @@ class Qwen3Dataset(Dataset):
                 target_ids]).to(torch.long)
 
             # for KL-div training
-            all_cfc = '\n'.join(self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n'.join(content['crossfile_array'][:self.num_structure_tokens])
             all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([

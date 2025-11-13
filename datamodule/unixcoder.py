@@ -46,7 +46,7 @@ class CodeCfcDataset(Dataset):
         self.fim_tokens_ids = fim_tokens_ids
         self.expand_factor = 1
         if self.training_stage == 0:
-            self.expand_factor = len(self.data[0]['content']['crossfile_array'])
+            self.expand_factor = len(self.data[0].get('content', self.data[0])['crossfile_array'])
 
     def __len__(self):
 
@@ -61,7 +61,7 @@ class CodeCfcDataset(Dataset):
             orig_ind = ind // self.expand_factor
             sub_ind = ind % self.expand_factor
 
-            cfc = self.data[orig_ind]['content']['crossfile_array'][sub_ind]
+            cfc = self.data[orig_ind].get('content', self.data[orig_ind])['crossfile_array'][sub_ind]
             cfc = '\n'.join(cfc.splitlines()[1:])  # removing file path in the first line
             cfc_tokens = self.ast_tokenizer.tokenize(cfc)
             cfc_tokens = cfc_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
@@ -83,11 +83,12 @@ class CodeCfcDataset(Dataset):
 
         else:
 
+            content = self.data[ind].get('content', self.data[ind])  # kostyl for stackv1 and stackv2 compatibility
             self.code_tokenizer.truncation_side = 'left'  # left context should be truncated from the left side
-            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            left_context_ids = self.code_tokenizer(content['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
-            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
-            groundtruth = "\n".join(self.data[ind]['content']['groundtruth'].split("\n")[:self.num_truth_lines])
+            right_context_ids = self.code_tokenizer(content['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            groundtruth = "\n".join(content['groundtruth'].split("\n")[:self.num_truth_lines])
             target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
 
             lr_budget = self.max_seq_length - 50 - self.num_structure_tokens - 3  # 3 tokens for FIM, 50 for line completion
@@ -98,7 +99,7 @@ class CodeCfcDataset(Dataset):
             right_context_ids = right_context_ids[:rc_budget]
 
             structure_ids = torch.empty(0, dtype=torch.long)
-            for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
+            for chunk in content['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 code_tokens = self.ast_tokenizer.tokenize(cfc)  # TODO: try decommenting?
                 code_tokens = code_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
@@ -118,7 +119,7 @@ class CodeCfcDataset(Dataset):
                 target_ids]).to(torch.long)
 
             # for KL-div training
-            all_cfc = '\n'.join(self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n'.join(content['crossfile_array'][:self.num_structure_tokens])
             all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([
@@ -180,7 +181,7 @@ class AstCfcDataset(Dataset):
 
         if self.training_stage == 0:
             # instead of unraveling this into 10x bigger dataset, just choose a random and increase number of epochs
-            chunk = random.choice(self.data[ind]['content']['crossfile_array'])
+            chunk = random.choice(self.data[ind].get('content', self.data[ind])['crossfile_array'])
             # remove decommenting?
             cfc = '\n'.join(chunk.splitlines()[1:]).replace('#', '')  # removing file path in the first line and decommenting
 
@@ -196,11 +197,12 @@ class AstCfcDataset(Dataset):
 
         else:
 
+            content = self.data[ind].get('content', self.data[ind])  # kostyl for stackv1 and stackv2 compatibility
             self.code_tokenizer.truncation_side = 'left'  # left context should be truncated from the left side
-            left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            left_context_ids = self.code_tokenizer(content['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
-            right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
-            groundtruth = "\n".join(self.data[ind]['content']['groundtruth'].split("\n")[:self.num_truth_lines])
+            right_context_ids = self.code_tokenizer(content['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            groundtruth = "\n".join(content['groundtruth'].split("\n")[:self.num_truth_lines])
             target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
 
             lr_budget = self.max_seq_length - 50 - self.num_structure_tokens - 3  # 3 tokens for FIM, 50 for line completion
@@ -211,7 +213,7 @@ class AstCfcDataset(Dataset):
             right_context_ids = right_context_ids[:rc_budget]
 
             structure_ids = torch.empty(0, dtype=torch.long)
-            for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
+            for chunk in content['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # AST is not calculated for comments
                 ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
@@ -231,7 +233,7 @@ class AstCfcDataset(Dataset):
                 target_ids]).to(torch.long)
 
             # for KL-div training
-            all_cfc = '\n'.join(self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n'.join(content['crossfile_array'][:self.num_structure_tokens])
             all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([
