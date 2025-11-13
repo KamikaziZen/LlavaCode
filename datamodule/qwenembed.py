@@ -90,20 +90,19 @@ class Qwen3Dataset(Dataset):
             left_context_ids = left_context_ids[-lc_budget:]
             right_context_ids = right_context_ids[:rc_budget]
 
-            structure_ids = []
+            structure_ids = torch.empty(0, dtype=torch.long)
             for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
-                structure_ids.extend(F.pad(cfc_ids, (0, self.max_structure_length-len(cfc_ids)), value=self.structure_tokenizer.pad_token_id))
-            structure_ids = torch.tensor(structure_ids, dtype=torch.long)
+                structure_ids = torch.hstack([structure_ids, F.pad(cfc_ids, (0, self.max_structure_length-len(cfc_ids)), value=self.structure_tokenizer.pad_token_id)])
 
             input_ids = torch.cat([
+                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
-                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
+                # self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
                 fim_middle_id,
                 target_ids]).to(torch.long)
 

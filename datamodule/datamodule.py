@@ -7,10 +7,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from .unixcoder import (
-    AstLcontextDataset,
     AstCfcDataset,
     CodeCfcDataset,
-    CodeAstCfcDataset,
 )
 # from .graphcodebert import DfgDataset
 from .jina import JinaDataset
@@ -96,14 +94,7 @@ class LlavaCodeDataModule(LightningDataModule):
                     f"valid_bs={self.valid_batch_size}")
 
     def get_dataset(self, raw_data, num_truth_lines):
-        if self.data_prefix == 'ast_lcontext':
-            return AstLcontextDataset(
-                raw_data,
-                code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.structure_tokenizer,
-                structure_token_id=self.structure_token_id,
-                max_structure_length=512)
-        elif self.data_prefix == 'ast_cfc':
+        if self.data_prefix == 'ast_cfc':
             return AstCfcDataset(
                 raw_data,
                 training_stage=self.training_stage,
@@ -146,13 +137,6 @@ class LlavaCodeDataModule(LightningDataModule):
                 num_truth_lines=num_truth_lines,
                 structure_token_id=self.structure_token_id,
                 num_structure_tokens=self.num_structure_tokens,
-                max_structure_length=512)
-        elif self.data_prefix == 'codeast_cfc':
-            return CodeAstCfcDataset(
-                raw_data,
-                code_tokenizer=self.code_tokenizer,
-                ast_tokenizer=self.structure_tokenizer,
-                structure_token_id=self.structure_token_id,
                 max_structure_length=512)
         elif self.data_prefix == 'dfg_cfc':
             return DfgDataset(

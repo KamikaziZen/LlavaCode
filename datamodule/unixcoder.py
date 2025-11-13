@@ -13,117 +13,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-class AstLcontextDataset(Dataset):
-    def __init__(self,
-                 data,
-                 ast_tokenizer,
-                 code_tokenizer,
-                 structure_token_id,
-                 max_seq_length=2048,
-                 max_structure_length=512):
-        super(AstLcontextDataset, self).__init__()
-        self.data = data
-        self.max_seq_length = max_seq_length
-        self.code_tokenizer = code_tokenizer
-        self.ast_tokenizer = ast_tokenizer
-        self.structure_token_id = structure_token_id
-        self.max_structure_length = max_structure_length
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, ind):
-        # indexing the chunked data directly
-        # source_tokens = torch.tensor(self.data[ind]['token_ids'])
-        fim_prefix, fim_suffix, fim_middle = torch.tensor([1]), torch.tensor([3]), torch.tensor([2])
-        left_context_ids = torch.tensor(self.data[ind]['lc_token_ids'])
-        right_context_ids = torch.tensor(self.data[ind]['rc_token_ids'])
-        target_ids = torch.tensor(self.data[ind]['tgt_token_ids'])
-
-        left_context = self.code_tokenizer.decode(left_context_ids)
-        # AST function ignores comments
-        ast_tokens = AST(left_context.replace('#', ''), 'python', self.ast_tokenizer)
-        patch_length = self.max_structure_length - 4  # 4 special tokens for unixcoder
-        num_structure_tokens = math.ceil(len(ast_tokens) / patch_length)
-
-        structure_ids = []
-        for i in range(num_structure_tokens):
-            patch = ast_tokens[i * patch_length: (i + 1) * patch_length]
-            patch_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] + patch + [self.ast_tokenizer.sep_token]
-            patch_ids = self.ast_tokenizer.convert_tokens_to_ids(patch_tokens)
-            structure_ids.extend(patch_ids)
-        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
-
-        input_ids = torch.cat([
-            fim_prefix,
-            left_context_ids,
-            torch.tensor([self.structure_token_id] * num_structure_tokens),
-            fim_suffix,
-            right_context_ids,
-            fim_middle,
-            target_ids]).to(torch.long)
-
-        item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
-
-        return item
-
-
-# class CodeCfcDataset_old(Dataset):
-#     """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
-#     """
-#     def __init__(self,
-#                  data,
-#                  ast_tokenizer,
-#                  code_tokenizer,
-#                  structure_token_id,
-#                  max_seq_length=2048,
-#                  max_structure_length=512):
-#         super(CodeCfcDataset, self).__init__()
-#         self.data = data
-#         self.max_seq_length = max_seq_length
-#         self.code_tokenizer = code_tokenizer
-#         self.ast_tokenizer = ast_tokenizer
-#         self.structure_token_id = structure_token_id
-#         self.max_structure_length = max_structure_length
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, ind):
-#         # indexing the chunked data directly
-#         # source_tokens = torch.tensor(self.data[ind]['token_ids'])
-#         fim_prefix, fim_suffix, fim_middle = torch.tensor([1]), torch.tensor([3]), torch.tensor([2])
-#         left_context_ids = torch.tensor(self.data[ind]['lc_token_ids'])
-#         right_context_ids = torch.tensor(self.data[ind]['rc_token_ids'])
-#         target_ids = torch.tensor(self.data[ind]['tgt_token_ids'])
-
-#         structure_tokens = self.ast_tokenizer.tokenize(
-#             self.code_tokenizer.decode(self.data[ind]['cfc_token_ids']))
-#         patch_length = self.max_structure_length - 4  # 4 special tokens for unixcoder
-#         num_structure_tokens = math.ceil(len(structure_tokens) / patch_length)
-
-#         structure_ids = []
-#         for i in range(num_structure_tokens):
-#             patch = structure_tokens[i * patch_length: (i + 1) * patch_length]
-#             patch_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
-#                 + patch + [self.ast_tokenizer.sep_token]
-#             patch_ids = self.ast_tokenizer.convert_tokens_to_ids(patch_tokens)
-#             structure_ids.extend(patch_ids)
-#         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
-
-#         input_ids = torch.cat([
-#             fim_prefix,
-#             left_context_ids,
-#             fim_suffix,
-#             right_context_ids,
-#             torch.tensor([self.structure_token_id] * num_structure_tokens),
-#             fim_middle,
-#             target_ids]).to(torch.long)
-
-#         item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
-#         return item
-
-
 class CodeCfcDataset(Dataset):
     """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
     """
@@ -141,6 +30,7 @@ class CodeCfcDataset(Dataset):
         super(CodeCfcDataset, self).__init__()
         # self.data = data
         print('Dataset samples before: ', len(data))
+        # samples with less then 10 cross-file contexts
         remove_indices = [4689, 4690, 10037, 10998, 13381, 14865, 15364, 17490, 20118, 32910, 39973, 41641, 46718, 58023, 58643, 58856, 64421, 68036, 68990, 72104, 72105, 72690, 72691, 73997, 75598, 81033, 88847, 90688, 93281, 95307, 95500, 95606, 107740, 107742, 114358, 115832, 120194, 134935, 136458]
         keep_indices = [i for i in range(len(data)) if i not in remove_indices]
         self.data = data.select(keep_indices)
@@ -207,25 +97,23 @@ class CodeCfcDataset(Dataset):
             left_context_ids = left_context_ids[-lc_budget:]
             right_context_ids = right_context_ids[:rc_budget]
 
-            structure_ids = []
+            structure_ids = torch.empty(0, dtype=torch.long)
             for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
-                # cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
                 code_tokens = self.ast_tokenizer.tokenize(cfc)  # TODO: try decommenting?
                 code_tokens = code_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
                 chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
                     + code_tokens + [self.ast_tokenizer.sep_token]
                 chunk_ids = self.ast_tokenizer.convert_tokens_to_ids(chunk_tokens)
-                structure_ids.extend(F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id))
-            structure_ids = torch.tensor(structure_ids, dtype=torch.long)
+                structure_ids = torch.hstack([structure_ids, F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id)])
 
             input_ids = torch.cat([
+                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
-                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
+                # self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
@@ -247,60 +135,6 @@ class CodeCfcDataset(Dataset):
         return item
 
 
-# class AstCfcDataset_old(Dataset):
-#     """Dataset type: 3 chunks of cross-file context, 40 lines each, merged into a single string
-#     """
-#     def __init__(self,
-#                  data,
-#                  ast_tokenizer,
-#                  code_tokenizer,
-#                  structure_token_id,
-#                  fim_tokens_ids,
-#                  max_seq_length=2048,
-#                  max_structure_length=512,
-#                  **kwargs):
-#         super(AstCfcDataset, self).__init__()
-#         self.data = data
-#         self.max_seq_length = max_seq_length
-#         self.code_tokenizer = code_tokenizer
-#         self.ast_tokenizer = ast_tokenizer
-#         self.structure_token_id = structure_token_id
-#         self.max_structure_length = max_structure_length
-#         self.fim_tokens_ids = fim_tokens_ids
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, ind):
-
-#         left_context_ids = torch.tensor(self.data[ind]['lc_token_ids'])
-#         right_context_ids = torch.tensor(self.data[ind]['rc_token_ids'])
-#         cfc_ids = torch.tensor(self.data[ind]['cfc_token_ids'])
-#         target_ids = torch.tensor(self.data[ind]['tgt_token_ids'])
-
-#         cfc = self.code_tokenizer.decode(cfc_ids)
-#         # AST function ignores comments
-#         ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)
-#         patch_length = self.max_structure_length - 4  # 4 special tokens for unixcoder
-#         num_structure_tokens = math.ceil(len(ast_tokens) / patch_length)
-
-#         structure_ids = []
-#         for i in range(num_structure_tokens):
-#             patch = ast_tokens[i * patch_length: (i + 1) * patch_length]
-#             patch_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
-#                 + patch + [self.ast_tokenizer.sep_token]
-#             patch_ids = self.ast_tokenizer.convert_tokens_to_ids(patch_tokens)
-#             structure_ids.extend(patch_ids)
-#         structure_ids = torch.tensor(structure_ids, dtype=torch.long)
-
-#         input_ids = pack_fim_inputs(
-#             self.fim_tokens_ids, left_context_ids, right_context_ids, target_ids, self.structure_token_id, num_structure_tokens)
-
-#         item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
-
-#         return item
-
-
 class AstCfcDataset(Dataset):
     """Dataset type: n chunks of cross-file context, m lines each, stored as an array
     """
@@ -319,7 +153,10 @@ class AstCfcDataset(Dataset):
         super(AstCfcDataset, self).__init__()
         self.data = data
         print('Dataset samples before removal: ', len(data))
+        # samples with less then 10 cross-file contexts
         remove_indices = [4689, 4690, 10037, 10998, 13381, 14865, 15364, 17490, 20118, 32910, 39973, 41641, 46718, 58023, 58643, 58856, 64421, 68036, 68990, 72104, 72105, 72690, 72691, 73997, 75598, 81033, 88847, 90688, 93281, 95307, 95500, 95606, 107740, 107742, 114358, 115832, 120194, 134935, 136458]
+        # sample with circular AST in cross-file context
+        remove_indices += [93399]
         keep_indices = [i for i in range(len(data)) if i not in remove_indices]
         self.data = data.select(keep_indices)
         print('Dataset samples after removal: ', len(self.data))
@@ -373,24 +210,23 @@ class AstCfcDataset(Dataset):
             left_context_ids = left_context_ids[-lc_budget:]
             right_context_ids = right_context_ids[:rc_budget]
 
-            structure_ids = []
+            structure_ids = torch.empty(0, dtype=torch.long)
             for chunk in self.data[ind]['content']['crossfile_array'][:self.num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
-                ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # decommenting
+                ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # AST is not calculated for comments
                 ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
                 chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
                     + ast_tokens + [self.ast_tokenizer.sep_token]
                 chunk_ids = self.ast_tokenizer.convert_tokens_to_ids(chunk_tokens)
-                structure_ids.append(F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id))
-            structure_ids = torch.hstack(structure_ids)
+                structure_ids = torch.hstack([structure_ids, F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id)])
 
             input_ids = torch.cat([
+                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
-                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
+                # self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
@@ -409,65 +245,4 @@ class AstCfcDataset(Dataset):
 
             item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
 
-        return item
-
-
-class CodeAstCfcDataset(Dataset):
-    def __init__(self,
-                 data,
-                 ast_tokenizer,
-                 code_tokenizer,
-                 structure_token_id,
-                 max_seq_length=2048,
-                 max_structure_length=512):
-        super(CodeAstCfcDataset, self).__init__()
-        self.data = data
-        self.max_seq_length = max_seq_length
-        self.code_tokenizer = code_tokenizer
-        self.ast_tokenizer = ast_tokenizer
-        self.structure_token_id = structure_token_id
-        self.max_structure_length = max_structure_length
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, ind):
-        # indexing the chunked data directly
-        # source_tokens = torch.tensor(self.data[ind]['token_ids'])
-        fim_prefix, fim_suffix, fim_middle = torch.tensor([1]), torch.tensor([3]), torch.tensor([2])
-        left_context_ids = torch.tensor(self.data[ind]['lc_token_ids'])
-        right_context_ids = torch.tensor(self.data[ind]['rc_token_ids'])
-        cfc_ids = torch.tensor(self.data[ind]['cfc_token_ids'])
-        target_ids = torch.tensor(self.data[ind]['tgt_token_ids'])
-
-        cfc_tokens = []
-        for token_id in cfc_ids:
-            cfc_tokens.append(self.code_tokenizer.decode([token_id]))
-        cfc = ''.join(cfc_tokens)
-
-        # AST function ignores comments
-        ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)
-        structure_tokens = cfc_tokens + ast_tokens
-        patch_length = self.max_structure_length - 4  # 4 special tokens for unixcoder
-        num_structure_tokens = math.ceil(len(structure_tokens) / patch_length)
-
-        structure_ids = []
-        for i in range(num_structure_tokens):
-            patch = structure_tokens[i * patch_length: (i + 1) * patch_length]
-            patch_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
-                + patch + [self.ast_tokenizer.sep_token]
-            patch_ids = self.ast_tokenizer.convert_tokens_to_ids(patch_tokens)
-            structure_ids.extend(patch_ids)
-        structure_ids = torch.tensor(structure_ids, dtype=torch.long)
-
-        input_ids = torch.cat([
-            fim_prefix,
-            left_context_ids,
-            fim_suffix,
-            right_context_ids,
-            torch.tensor([self.structure_token_id] * num_structure_tokens),
-            fim_middle,
-            target_ids]).to(torch.long)
-
-        item = {"input_ids": input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
         return item
