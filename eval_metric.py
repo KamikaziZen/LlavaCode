@@ -12,10 +12,18 @@ from functools import partial
 import torch.multiprocessing as mp
 from tree_sitter import Language, Parser
 from typing import List, Callable, Union
-from tree_sitter.binding import Node as TSNode
+from tree_sitter import Node as TSNode
+from tree_sitter_python import language as python_language
+from tree_sitter_java import language as java_language
+from codebleu import calc_codebleu
 
 parser = None
 
+LANGUAGE_MAP = {
+    'python': python_language,
+    'java': java_language,
+    # Add more as needed
+}
 
 def cal_edit_sim(references, hypotheses):
     total = len(references)
@@ -226,9 +234,14 @@ def compute_metric_stmt(args):
     ts_lang = args.language
     if ts_lang == 'csharp':
         ts_lang = 'c_sharp'
-    language = Language('parser/my-languages.so', ts_lang)
-    parser = Parser()
-    parser.set_language(language)
+    language_func = LANGUAGE_MAP.get(ts_lang)
+    if language_func is None:
+        raise ValueError(f"Language '{ts_lang}' not supported")
+    
+    # Call the function to get the language
+    language = Language(language_func())
+    parser = Parser(language)
+    # parser.set_language(language)
 
     truncated_samples = []
     print("post-processing samples ...")
@@ -250,7 +263,7 @@ def compute_metric_stmt(args):
     exact_match = 0
     edit_sim = 0
     edit_sim_repoeval = 0
-
+    
     for idx, trunc_s in enumerate(truncated_samples):
         es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
         es_repoeval = cal_edit_sim_repoeval([trunc_s["target"]], [trunc_s["pred"]])
@@ -270,10 +283,22 @@ def compute_metric_stmt(args):
     edit_sim = round(edit_sim / len(truncated_samples), 2)
     edit_sim_repoeval = round(edit_sim_repoeval / len(truncated_samples) * 100, 2)
 
+    codebleu_score = calc_codebleu([elem["target"] for elem in truncated_samples], [elem["pred"] for elem in truncated_samples], lang=args.language)
+    codebleu = round(codebleu_score['codebleu'] * 100, 2)
+    ngram_match_score = round(codebleu_score['ngram_match_score'] * 100, 2)
+    weighted_ngram_match_score = round(codebleu_score['weighted_ngram_match_score'] * 100, 2)
+    syntax_match_score = round(codebleu_score['syntax_match_score'] * 100, 2)
+    dataflow_match_score = round(codebleu_score['dataflow_match_score'] * 100, 2)
+
     print(
         f"Code Matching: "
         f"EM {em_ratio:.2f}, "
         f"ES {edit_sim:.2f}, "
+        f"CodeBLEU {codebleu:.2f}, "
+        f"NGramMatchScore {ngram_match_score:.2f}, "
+        f"WeightedNGramMatchScore {weighted_ngram_match_score:.2f}, "
+        f"SyntaxMatchScore {syntax_match_score:.2f}, "
+        f"DataflowMatchScore {dataflow_match_score:.2f}, "
         f"ES RepoEval {edit_sim_repoeval:.2f}"
     )
 
@@ -287,6 +312,11 @@ def compute_metric_stmt(args):
             "em": em_ratio,
             "es": edit_sim,
             "es_repoeval": edit_sim_repoeval,
+            "codebleu": codebleu,
+            "ngram_match_score": ngram_match_score,
+            "weighted_ngram_match_score": weighted_ngram_match_score,
+            "syntax_match_score": syntax_match_score,
+            "dataflow_match_score": dataflow_match_score,
             "total": len(truncated_samples)
         }
         f.write(json.dumps(res, indent=2))
