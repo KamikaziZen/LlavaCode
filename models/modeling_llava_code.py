@@ -874,26 +874,26 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100], strip=True)
 
                 # ---- Log probs of greedy tokens ----
-                # greedy_input_ids = greedy_ids[:, :-1]
-                # greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
-                # greedy_logits = self(
-                #     input_ids=greedy_input_ids,
-                #     attention_mask=greedy_attention_mask,
-                #     structure_values=structure_ids,
-                #     num_structure_tokens=num_structure_tokens
-                # ).logits
-                # log_probs = F.log_softmax(greedy_logits, dim=-1)
+                greedy_input_ids = greedy_ids[:, :-1]
+                greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                greedy_logits = self(
+                    input_ids=greedy_input_ids,
+                    attention_mask=greedy_attention_mask,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens
+                ).logits
+                log_probs = F.log_softmax(greedy_logits, dim=-1)
 
-                # gen_tokens = greedy_ids[:, prompt_len:]
-                # gen_logits = log_probs[:, prompt_len-1:, :]
-                # seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
-                # seq_log_prob = seq_log_probs.sum(dim=1)
+                gen_tokens = greedy_ids[:, prompt_len:]
+                gen_logits = log_probs[:, prompt_len-1:, :]
+                seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+                seq_log_prob = seq_log_probs.sum(dim=1)
 
-                # # ---- Greedy-imitation loss ----
-                # reward = eval(self.reward)
-                # scst_loss = -(reward * seq_log_prob).mean()
+                # ---- Greedy-imitation loss ----
+                reward = eval(self.reward)
+                scst_loss = -(reward * seq_log_prob).mean()
 
-                # loss += self.alpha_scst * scst_loss
+                loss += self.alpha_scst * scst_loss
 
             # if self.alpha_scst is not None and self.alpha_scst > .0:
             #     assert input_ids.shape[0] == 1, 'Change the logic below'
