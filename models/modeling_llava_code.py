@@ -7,14 +7,11 @@ from transformers import (
     AutoTokenizer,
     PretrainedConfig,
     GenerationMixin,
-    BitsAndBytesConfig,
-    CONFIG_MAPPING
 )
 
 from transformers.utils import can_return_tuple, LossKwargs
 from transformers.processing_utils import Unpack
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
-from transformers.activations import ACT2FN
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.optimization import (
     get_linear_schedule_with_warmup,
@@ -38,6 +35,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
+from .config import LlavaCodeConfig
+from .projector import LlavaCodeMultiModalProjector3L, LlavaCodeMultiModalProjector4L
 from .modeling_unixcoder import UniXcoderEncoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
@@ -46,227 +45,6 @@ from .kl_loss import get_kl_loss
 
 from datamodule.const import STRUCTURE_TOKEN, FIMMAP
 from datamodule.utils import get_fim_tokens, truncate_trash
-
-
-class LlavaCodeConfig(PretrainedConfig):
-    r"""
-    This is the configuration class to store the configuration of a [`LlavaNextForConditionalGeneration`]. It is used to instantiate an
-    Llava-NeXT model according to the specified arguments, defining the model architecture. Instantiating a configuration
-    with the defaults will yield a similar configuration to that of the [llava-hf/llava-v1.6-mistral-7b-hf](https://huggingface.co/llava-hf/llava-v1.6-mistral-7b-hf)
-    model.
-
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
-
-    Args:
-        structure_config (`Union[AutoConfig, dict]`,  *optional*, defaults to `CLIPVisionConfig`):
-            The config object or dictionary of the structure backbone.
-        text_config (`Union[AutoConfig, dict]`, *optional*, defaults to `LlamaConfig`):
-            The config object or dictionary of the text backbone.
-        structure_token_index (`int`, *optional*, defaults to 25782):
-            The structure token index to encode the structure prompt.
-        projector_hidden_act (`str`, *optional*, defaults to `"gelu"`):
-            The activation function used by the multimodal projector.
-        tie_word_embeddings (`bool`, *optional*, defaults to `False`):
-            Whether the model's input and output word embeddings should be tied.
-        multimodal_projector_bias (`bool`, *optional*, defaults to `True`):
-            Whether to use bias in the multimodal projector.
-
-    Example:
-
-    ```python
-    >>> from transformers import LlavaNextForConditionalGeneration, LlavaNextConfig, CLIPVisionConfig, LlamaConfig
-
-    >>> # Initializing a Llama config
-    >>> text_config = LlamaConfig()
-
-    >>> # Initializing a Llava-Next llava-hf/llava-v1.6-mistral-7b-hf style configuration
-    >>> configuration = LlavaNextConfig(vision_config, text_config)
-
-    >>> # Initializing a model from the llava-hf/llava-v1.6-mistral-7b-hf style configuration
-    >>> model = LlavaNextForConditionalGeneration(configuration)
-
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
-
-    model_type = "llava_next"
-    sub_configs = {"text_config": AutoConfig, "structure_config": AutoConfig}
-
-    def __init__(
-        self,
-        structure_config=None,
-        text_config=None,
-        structure_token_id=None,
-        pad_token_id=0,
-        projector_hidden_act="gelu",
-        tie_word_embeddings=False,
-        multimodal_projector_bias=True,
-        quantize=False,
-        injector=False,
-        **kwargs,
-    ):
-        self.projector_hidden_act = projector_hidden_act
-        self.multimodal_projector_bias = multimodal_projector_bias
-
-        self.structure_config = structure_config
-
-        if isinstance(text_config, dict):
-            text_config["model_type"] = text_config["model_type"] if "model_type" in text_config else "llama"
-            text_config = CONFIG_MAPPING[text_config["model_type"]](**text_config)
-        elif text_config is None:
-            text_config = CONFIG_MAPPING["llama"]()
-
-        self.text_config = text_config
-
-        if quantize:
-            self.quantization_config = BitsAndBytesConfig(load_in_8bit=True)
-        else:
-            self.quantization_config = {}
-
-        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
-
-        self.structure_token_id = structure_token_id
-        self.pad_token_id = pad_token_id  # has to go after super() init
-
-        self.injector = injector
-
-
-class LlavaCodeMultiModalProjector(nn.Module):
-    def __init__(self, config: LlavaCodeConfig):
-        super().__init__()
-        self.linear_1 = nn.Linear(
-            config.structure_config.hidden_size,
-            config.text_config.hidden_size * 2,
-            bias=config.multimodal_projector_bias,
-        )
-        self.act = ACT2FN[config.projector_hidden_act]
-        self.linear_2 = nn.Linear(
-            config.text_config.hidden_size * 2, config.text_config.hidden_size * 2, bias=config.multimodal_projector_bias
-        )
-        self.linear_3 = nn.Linear(
-            config.text_config.hidden_size * 2, config.text_config.hidden_size, bias=config.multimodal_projector_bias
-        )
-        self.ln_1 = nn.LayerNorm(config.text_config.hidden_size * 2)
-        self.ln_2 = nn.LayerNorm(config.text_config.hidden_size * 2)
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-    def forward(self, structure_features):
-        hidden_states = self.linear_1(structure_features)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.ln_1(hidden_states)
-        hidden_states = self.linear_2(hidden_states)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.ln_2(hidden_states)
-        hidden_states = self.linear_3(hidden_states)
-        return hidden_states
-
-
-# class LlavaCodeMultiModalProjector(nn.Module):
-#     def __init__(self, config: LlavaCodeConfig):
-#         super().__init__()
-#         self.linear_1 = nn.Linear(
-#             config.structure_config.hidden_size,
-#             config.text_config.hidden_size,
-#             bias=config.multimodal_projector_bias,
-#         )
-#         self.act = ACT2FN[config.projector_hidden_act]
-#         self.linear_2 = nn.Linear(
-#             config.text_config.hidden_size, config.text_config.hidden_size, bias=config.multimodal_projector_bias
-#         )
-#         self.ln_1 = nn.LayerNorm(config.text_config.hidden_size)
-#         # self.ln_2 = nn.LayerNorm(config.text_config.hidden_size)
-
-#     @property
-#     def device(self):
-#         return next(self.model.parameters()).device
-
-#     def forward(self, structure_features):
-#         hidden_states = self.linear_1(structure_features)
-#         hidden_states = self.act(hidden_states)
-#         hidden_states = self.ln_1(hidden_states)
-#         hidden_states = self.linear_2(hidden_states)
-#         return hidden_states
-
-
-class ResidualInjector(nn.Module):
-    def __init__(self, num_layers):
-        """
-        num_layers: number of transformer blocks
-        hidden_dim: hidden size of the model
-        """
-        super().__init__()
-        self.num_layers = num_layers
-
-        # Trainable scalar per block
-        self.coeffs = nn.Parameter(torch.ones(num_layers), requires_grad=True)  # shape [num_layers]
-
-        # Dynamic per-batch storage (set before forward)
-        self.injection_tensor = None
-
-    def make_hook(self, layer_id):
-        """
-        Returns a forward_pre_hook for a given transformer block
-        """
-        def hook(module, input):
-            hidden_states = input[0]  # (B, S, D)
-            coeff = self.coeffs[layer_id]
-
-            # Build injection tensor from vectors and mask
-            # injection_tensor = torch.zeros_like(hidden_states)
-            # injection_tensor.masked_scatter_(self.mask, self.injection_vectors)
-            hidden_states = hidden_states + coeff * self.injection_tensor
-            return (hidden_states,) + input[1:]
-
-        return hook
-
-    def register_hooks(self, blocks):
-        """
-        Register hooks to all transformer blocks except the first one
-        Assumes `model.model.layers` contains the transformer blocks
-        """
-        for i, block in enumerate(blocks):
-            # if i == 0:
-            #     continue
-            block.register_forward_pre_hook(self.make_hook(i))
-
-
-# @dataclass
-# class LlavaCodeModelOutputWithPast(BaseModelOutputWithPast):
-#     """
-#     Base class for Llava outputs, with hidden states and attentions.
-
-#     Args:
-#         last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
-#             Sequence of hidden-states at the output of the last layer of the model.
-#         past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-#             Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-#             `(batch_size, num_heads, sequence_length, embed_size_per_head)`)
-
-#             Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
-#             `past_key_values` input) to speed up sequential decoding.
-#         hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-#             Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-#             one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
-
-#             Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-#         attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-#             Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-#             sequence_length)`.
-
-#             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-#             heads.
-#         structure_hidden_states (`torch.FloatTensor`, *optional*):
-#             A `torch.FloatTensor` of size `(batch_size, num_images, sequence_length, hidden_size)`.
-#             structure_hidden_states of the model produced by the structure encoder and after projecting the last hidden state.
-#     """
-
-#     logits: Optional[torch.FloatTensor] = None
-#     structure_features: Optional[torch.FloatTensor] = None
-#     structure_embeddings: Optional[torch.FloatTensor] = None
 
 
 class LlavaCodePreTrainedModel(PreTrainedModel):
@@ -359,8 +137,13 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         else:
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
-        self.multi_modal_projector = LlavaCodeMultiModalProjector(config)
-        print('before post_init', self.multi_modal_projector.linear_1.weight.data.norm(2))
+        if self.config.projector == '3L':
+            self.multi_modal_projector = LlavaCodeMultiModalProjector3L(config)
+        elif self.config.projector == '4L':
+            self.multi_modal_projector = LlavaCodeMultiModalProjector4L(config)
+        else:
+            raise ValueError(f'Unrecognized projector config: {self.config.projector }')
+        # print('before post_init', self.multi_modal_projector.linear_1.weight.data.norm(2))
 
         self.vocab_size = config.text_config.vocab_size
 
@@ -374,18 +157,11 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         else:
             self.language_model = AutoModelForCausalLM.from_pretrained(self.config.text_config.model_id)
 
-        if config.injector:
-            self.injector = ResidualInjector(num_layers=len(self.language_model.layers))
-            self.injector.register_hooks(self.language_model.layers)
-            print(self.injector.coeffs)
-        else:
-            self.injector = None
-
         self.fim_tokens = get_fim_tokens(self.config.text_config.model_id)
 
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
-        print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
+        # print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
@@ -394,7 +170,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         self.language_model.set_input_embeddings(value)
 
     def get_structure_features_and_embeddings(self, structure_values, nums_structure_tokens=None, structure_pos_idx=None, structure_attn_mask=None):
-        # print('structure_values shape', structure_values.shape, 'num', nums_structure_tokens)
         if structure_pos_idx and structure_attn_mask:
 
             # structure values: code + dfg traversal
@@ -417,14 +192,12 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             structure_embedding = (outputs * token_mask.unsqueeze(-1)).sum(1) / token_mask.sum(-1).unsqueeze(-1)
         elif structure_pos_idx is None and structure_attn_mask is None:
 
-            # structure values: ast tree sequence ids
             _, structure_embedding = self.structure_model(structure_values.reshape(-1, 512))  # unixcoder and jina take care of attention mask inside the forward method
         else:
 
             raise ValueError('Incorrect inputs to get_structure_features()')
 
         if nums_structure_tokens is not None:
-            # this shouldn't be triggered during training_stage == 0
             # nums_structure_tokens: number of structure tokens for each sample in a batch
             max_num = nums_structure_tokens.max()
             row_ids = torch.arange(max_num).expand(len(nums_structure_tokens), max_num).to(nums_structure_tokens.device)
@@ -488,22 +261,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             structure_features, structure_embeddings = self.get_structure_features_and_embeddings(
                 structure_values, num_structure_tokens, structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
             structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            # import random
-            # roll = random.randint(1, 1000)
-            # if roll > 0:
-            #     print("structure features", structure_features.shape)
-            # debug and testing
-            # structure_values = structure_values.reshape(-1, 2048)
-            # structure_features = self.language_model.wte(structure_values)
-            # with torch.no_grad():
-            #     outputs = self.language_model(inputs_embeds=structure_features, output_hidden_states=True)
-            #     hidden_states = outputs.hidden_states[-1][:, -1, :]
-            # new_structure_features = []
-            # for i in range(len(structure_features)):
-            #     structure_features_row = structure_features[i][structure_values[i] != 0]
-            #     new_structure_features.append(structure_features_row.mean(dim=0))
-            # structure_features = torch.cat(new_structure_features)
-            # structure_features = hidden_states
         else:
             structure_embeddings = None
 
@@ -806,6 +563,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
     def training_step(self, batch, batch_idx):
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
+        # print('structure_values shape', structure_ids.shape,  'structure_values type', structure_ids.dtype)
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
 
         input_ids, labels, attention_mask = self.get_inputs_and_labels_fim(token_ids)
@@ -817,6 +575,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         scst_loss = torch.tensor(0.0, device=input_ids.device)
         em = torch.tensor(0.0, device=input_ids.device)
         es = torch.tensor(0.0, device=input_ids.device)
+        cum_prec = torch.tensor(0.0, device=input_ids.device)
+        wji = torch.tensor(0.0, device=input_ids.device)
         loss = torch.tensor(0.0, device=input_ids.device)
 
         assert structure_attn_mask is None and structure_pos_idx is None
@@ -829,7 +589,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             num_structure_tokens=num_structure_tokens)
         logits = outputs.logits
         ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-        self.log("Train/Loss/MLE", ce_loss, sync_dist=True, on_step=True, prog_bar=True)
 
         loss += self.alpha_ce * ce_loss
 
@@ -841,13 +600,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
 
             align_loss = F.mse_loss(proj_sim, embed_sim)
-            self.log("Train/Loss/Align", align_loss, sync_dist=True, on_step=True, prog_bar=True)
 
-            proj_var = projections.var(dim=0).mean()
-            var_loss = F.relu(1e-4 - proj_var)
-            self.log("Train/Loss/Var", var_loss, sync_dist=True, on_step=True, prog_bar=True)
+            # proj_var = projections.var(dim=0).mean()
+            # var_loss = F.relu(1e-4 - proj_var)
 
-            loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
+            # loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
+            loss += self.alpha_align * align_loss
 
         if self.alpha_kl is not None and self.alpha_kl > .0:
             assert self.training_stage > 0
@@ -866,7 +624,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 student_labels=labels,
                 temperature=self.kl_temperature,
             )
-            self.log("Train/Loss/KL", kl_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_kl * kl_loss
 
@@ -883,10 +640,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 pad_token_id=self.tokenizer.eos_token_id
             )
             em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
-            self.log("Train/Acc/EM", em, sync_dist=True, on_step=True, prog_bar=True)
-            self.log("Train/Acc/ES", es, sync_dist=True, on_step=True, prog_bar=True)
-            self.log("Train/Acc/Precision", cum_prec, sync_dist=True, on_step=True, prog_bar=True)
-            self.log("Train/Acc/WJI", wji, sync_dist=True, on_step=True, prog_bar=True)
 
             # ---- Log probs of greedy tokens ----
             greedy_input_ids = greedy_ids[:, :-1]
@@ -907,7 +660,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             # ---- Greedy-imitation loss ----
             reward = eval(self.reward)
             scst_loss = -(reward * seq_log_prob).mean()
-            self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
 
             loss += self.alpha_scst * scst_loss
 
@@ -960,6 +712,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
         #     loss += self.alpha_scst * scst_loss
 
+        self.log("Train/Loss/MLE", ce_loss, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Loss/KL", kl_loss, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Loss/Align", align_loss, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Loss/Var", var_loss, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Acc/EM", em, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Acc/ES", es, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Acc/Precision", cum_prec, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Acc/WJI", wji, sync_dist=True, on_step=True, prog_bar=True)
+        self.log("Train/Loss/SCST", scst_loss, sync_dist=True, on_step=True, prog_bar=True)
         self.log("Train/Loss/All", loss, sync_dist=True, on_step=True, prog_bar=True)
 
         return loss
@@ -1014,6 +775,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         cum_prec = cumulative_precision(gold_text, pred_text)
         wji = weighted_jaccard(gold_text, pred_text)
 
+        import json
+        record = {'pred': pred_text, 'gold': gold_text}
+        with open('ast_cfc_java.jsonl', 'a') as f:
+            f.write(json.dumps(record) + "\n")
+
         es = 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
 
         def tokenize_code(code):
@@ -1032,6 +798,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     def validation_step(self, batch, batch_idx):
 
         token_ids, structure_ids = batch['input_ids'], batch['structure_ids']
+        # token_ids, structure_ids = batch['teacher_input_ids'], batch['structure_ids']
         num_structure_tokens, structure_attn_mask, structure_pos_idx = batch.get('num_structure_tokens'), batch.get('structure_attn_mask'), batch.get('structure_pos_idx')
         input_ids, labels, attention_mask = self.get_inputs_and_labels_fim(token_ids)
 
@@ -1044,6 +811,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             scst_loss = torch.tensor(0.0, device=input_ids.device)
             em = torch.tensor(0.0, device=input_ids.device)
             es = torch.tensor(0.0, device=input_ids.device)
+            cum_prec = torch.tensor(0.0, device=input_ids.device)
+            wji = torch.tensor(0.0, device=input_ids.device)
             loss = torch.tensor(0.0, device=input_ids.device)
 
             outputs = self(
@@ -1052,12 +821,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_values=structure_ids,
                 structure_attn_mask=structure_attn_mask,
                 structure_pos_idx=structure_pos_idx,
-                num_structure_tokens=num_structure_tokens)
+                num_structure_tokens=num_structure_tokens
+            )
             logits = outputs.logits
 
             ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
             loss += self.alpha_ce * ce_loss
-            self.log("Val/Loss/MLE", ce_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
             if self.alpha_align is not None and self.alpha_align > 0.0:
 
@@ -1067,13 +836,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
                 embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
                 align_loss = F.mse_loss(proj_sim, embed_sim)
-                self.log("Val/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
-                proj_var = projections.var(dim=0).mean()
-                var_loss = F.relu(1e-4 - proj_var)
-                self.log("Val/Loss/Var", var_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+                # proj_var = projections.var(dim=0).mean()
+                # var_loss = F.relu(1e-4 - proj_var)
 
-                loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
+                # loss += self.alpha_align * align_loss + self.alpha_align / 10 * var_loss
+                loss += self.alpha_align * align_loss
 
             if self.alpha_kl is not None and self.alpha_kl > 0.0:
                 teacher_input_ids, teacher_labels, teacher_attention_mask = self.get_inputs_and_labels_fim(batch['teacher_input_ids'])
@@ -1088,7 +856,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     student_labels=labels,
                     temperature=self.kl_temperature,
                 )
-                self.log("Val/Loss/KL", kl_loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 loss += self.alpha_kl * kl_loss
 
@@ -1105,33 +872,28 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     # pad_token_id=self.tokenizer.eos_token_id
                 )
                 em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100], strip=True)
-                self.log("Val_Acc_EM", em, sync_dist=True, on_epoch=True, prog_bar=True)
-                self.log("Val_Acc_ES", es, sync_dist=True, on_epoch=True, prog_bar=True)
-                self.log("Val_Acc_Precision", cum_prec, sync_dist=True, on_epoch=True, prog_bar=True)
-                self.log("Val_Acc_WJI", wji, sync_dist=True, on_epoch=True, prog_bar=True)
 
                 # ---- Log probs of greedy tokens ----
-                greedy_input_ids = greedy_ids[:, :-1]
-                greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
-                greedy_logits = self(
-                    input_ids=greedy_input_ids,
-                    attention_mask=greedy_attention_mask,
-                    structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens
-                ).logits
-                log_probs = F.log_softmax(greedy_logits, dim=-1)
+                # greedy_input_ids = greedy_ids[:, :-1]
+                # greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                # greedy_logits = self(
+                #     input_ids=greedy_input_ids,
+                #     attention_mask=greedy_attention_mask,
+                #     structure_values=structure_ids,
+                #     num_structure_tokens=num_structure_tokens
+                # ).logits
+                # log_probs = F.log_softmax(greedy_logits, dim=-1)
 
-                gen_tokens = greedy_ids[:, prompt_len:]
-                gen_logits = log_probs[:, prompt_len-1:, :]
-                seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
-                seq_log_prob = seq_log_probs.sum(dim=1)
+                # gen_tokens = greedy_ids[:, prompt_len:]
+                # gen_logits = log_probs[:, prompt_len-1:, :]
+                # seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+                # seq_log_prob = seq_log_probs.sum(dim=1)
 
-                # ---- Greedy-imitation loss ----
-                reward = eval(self.reward)
-                scst_loss = -(reward * seq_log_prob).mean()
-                self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+                # # ---- Greedy-imitation loss ----
+                # reward = eval(self.reward)
+                # scst_loss = -(reward * seq_log_prob).mean()
 
-                loss += self.alpha_scst * scst_loss
+                # loss += self.alpha_scst * scst_loss
 
             # if self.alpha_scst is not None and self.alpha_scst > .0:
             #     assert input_ids.shape[0] == 1, 'Change the logic below'
@@ -1182,6 +944,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             #     loss += self.alpha_scst * scst_loss
 
+        self.log("Val/Loss/MLE", ce_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val/Loss/KL", kl_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val/Loss/Align", align_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val/Loss/Var", var_loss, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val_Acc_EM", em, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val_Acc_ES", es, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val_Acc_Precision", cum_prec, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val_Acc_WJI", wji, sync_dist=True, on_epoch=True, prog_bar=True)
+        self.log("Val/Loss/SCST", scst_loss, sync_dist=True, on_epoch=True, prog_bar=True)
         self.log("Val/Loss/All", loss, sync_dist=True, on_epoch=True, prog_bar=True)
 
         return {"val_ce": ce_loss, 
