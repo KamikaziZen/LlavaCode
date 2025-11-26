@@ -98,8 +98,9 @@ class CodeCfcDataset(Dataset):
             left_context_ids = left_context_ids[-lc_budget:]
             right_context_ids = right_context_ids[:rc_budget]
 
+            num_structure_tokens = min(self.num_structure_tokens, len(content['crossfile_array']))
             structure_ids = torch.empty(0, dtype=torch.long)
-            for chunk in content['crossfile_array'][:self.num_structure_tokens]:
+            for chunk in content['crossfile_array'][:num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 code_tokens = self.ast_tokenizer.tokenize(cfc)  # TODO: try decommenting?
                 code_tokens = code_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
@@ -109,29 +110,31 @@ class CodeCfcDataset(Dataset):
                 structure_ids = torch.hstack([structure_ids, F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id)])
 
             input_ids = torch.cat([
-                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
+                torch.tensor([self.structure_token_id] * num_structure_tokens),
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
                 # self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                # torch.tensor([self.structure_token_id] * self.num_structure_tokens),
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
             # for KL-div training
-            all_cfc = '\n'.join(content['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n'.join(content['crossfile_array'][:num_structure_tokens])
             all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([
+                all_cfc_ids,
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                all_cfc_ids,
+                # all_cfc_ids,
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
-            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
 
         return item
 
@@ -212,8 +215,9 @@ class AstCfcDataset(Dataset):
             left_context_ids = left_context_ids[-lc_budget:]
             right_context_ids = right_context_ids[:rc_budget]
 
+            num_structure_tokens = min(self.num_structure_tokens, len(content['crossfile_array']))
             structure_ids = torch.empty(0, dtype=torch.long)
-            for chunk in content['crossfile_array'][:self.num_structure_tokens]:
+            for chunk in content['crossfile_array'][:num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # AST is not calculated for comments
                 ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
@@ -223,28 +227,30 @@ class AstCfcDataset(Dataset):
                 structure_ids = torch.hstack([structure_ids, F.pad(torch.tensor(chunk_ids), (0, self.max_structure_length-len(chunk_ids)), value=self.ast_tokenizer.pad_token_id)])
 
             input_ids = torch.cat([
-                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
+                torch.tensor([self.structure_token_id] * num_structure_tokens),
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
                 # self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                # torch.tensor([self.structure_token_id] * num_structure_tokens),
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
             # for KL-div training
-            all_cfc = '\n'.join(content['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n'.join(content['crossfile_array'][:num_structure_tokens])
             all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([
+                all_cfc_ids,
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                all_cfc_ids,
+                # all_cfc_ids,
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
-            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
 
         return item

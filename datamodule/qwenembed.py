@@ -26,7 +26,10 @@ class Qwen3Dataset(Dataset):
         super(Qwen3Dataset, self).__init__()
         # self.data = data
         print('Dataset samples before: ', len(data))
+        # Examples with 0 cfc in TheStackv1
         remove_indices = [4689, 4690, 10037, 10998, 13381, 14865, 15364, 17490, 20118, 32910, 39973, 41641, 46718, 58023, 58643, 58856, 64421, 68036, 68990, 72104, 72105, 72690, 72691, 73997, 75598, 81033, 88847, 90688, 93281, 95307, 95500, 95606, 107740, 107742, 114358, 115832, 120194, 134935, 136458]
+        # Examples with < 2 cfc in TheStackv2
+        remove_indices += [1157732, 1157733, 1157734, 1157735, 1157736, 1157737, 1157738, 1157739, 1157740, 1157741, 1157742, 1157743, 1157744, 1157745, 1157746, 1157747, 1157748, 1157749, 1157750, 1157751, 1157752, 1157753, 1157754, 1157755, 1157756, 1157757, 1157758, 1157759, 1157760, 1157761, 1157762, 1157763, 1157764, 1157765, 1157766, 1157767, 1157768, 1157769, 1157770, 1157771, 1157772, 1157773, 1157774, 1157775, 1157776, 1157777, 1157778, 1157779, 1157780, 1157781, 1157782, 1157783, 1157784, 1157785, 1157786, 1157787, 1157788, 1157789, 1157790, 1157791, 1157792, 1157793, 1157794, 1157795, 1157796, 1157797, 1157798, 1157799, 1157800, 1157801, 1157802, 1157803, 1157804, 1157805, 1157806, 1157807, 1157808, 1157809, 1157810, 1157811, 1157812, 1157813, 1157814, 1157815, 1157816, 1157817, 1157818, 1157819, 1157820, 1157821, 1157822, 1157823, 1157824, 1157825, 1157826, 1157827, 1157828, 1157829, 1157830, 1157831]
         keep_indices = [i for i in range(len(data)) if i not in remove_indices]
         self.data = data.select(keep_indices)
         print('Dataset samples: ', len(self.data))
@@ -91,35 +94,38 @@ class Qwen3Dataset(Dataset):
             left_context_ids = left_context_ids[-lc_budget:]
             right_context_ids = right_context_ids[:rc_budget]
 
+            num_structure_tokens = min(self.num_structure_tokens, len(content['crossfile_array']))
             structure_ids = torch.empty(0, dtype=torch.long)
-            for chunk in content['crossfile_array'][:self.num_structure_tokens]:
+            for chunk in content['crossfile_array'][:num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
                 cfc_ids = self.structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=self.max_structure_length).input_ids[0]
                 structure_ids = torch.hstack([structure_ids, F.pad(cfc_ids, (0, self.max_structure_length-len(cfc_ids)), value=self.structure_tokenizer.pad_token_id)])
 
             input_ids = torch.cat([
-                torch.tensor([self.structure_token_id] * self.num_structure_tokens),
+                torch.tensor([self.structure_token_id] * num_structure_tokens),
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
                 # self.code_tokenizer('\n# Here are some relevant code fragments from other files of the repo:', return_tensors='pt').input_ids[0],
+                # torch.tensor([self.structure_token_id] * num_structure_tokens),
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
             # for KL-div training
-            all_cfc = '\n'.join(content['crossfile_array'][:self.num_structure_tokens])
+            all_cfc = '\n'.join(content['crossfile_array'][:num_structure_tokens])
             all_cfc = '\n# Here are some relevant code fragments from other files of the repo:\n' + all_cfc
             all_cfc_ids = self.code_tokenizer(all_cfc, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             teacher_input_ids = torch.cat([
+                all_cfc_ids,
                 fim_prefix_id,
                 left_context_ids,
                 fim_suffix_id,
                 right_context_ids,
-                all_cfc_ids,
+                # all_cfc_ids,
                 fim_middle_id,
                 target_ids]).to(torch.long)
 
-            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': self.num_structure_tokens}
+            item = {"input_ids": input_ids, 'teacher_input_ids': teacher_input_ids, 'structure_ids': structure_ids, 'num_structure_tokens': num_structure_tokens}
 
         return item
