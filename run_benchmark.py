@@ -28,12 +28,17 @@ def prepare_prompt(args,
                    tokenizer,
                    structure_tokenizer,
                    fim_tokens,
-                   left_cxt,
-                   right_cxt=None,
-                   crossfile_cxt=None):
+                   entry):
     """Dataset type: 10 chunks of cross-file context, 10 lines each, stored as an array
     """
     fim_prefix, fim_suffix, fim_middle = fim_tokens
+
+    left_cxt = entry["prompt"]
+    right_cxt = entry["right_context"]
+    if 'crossfile_context' in entry:
+        crossfile_cxt = entry["crossfile_context"] if type(entry["crossfile_context"]) == str else entry["crossfile_context"]['text']
+    else:
+        crossfile_cxt = None
 
     if args.data_prefix == 'code_cfc_uxc':
         assert False
@@ -101,6 +106,64 @@ def prepare_prompt(args,
         num_structure_tokens = min(args.num_structure_tokens, len(chunks))
         chunks = chunks[:num_structure_tokens]
 
+        # padding list of cfc
+        # if len(chunks) < args.num_structure_tokens and len(chunks) > 0:
+        #     chunks += [chunks[-1]] * (args.num_structure_tokens - len(chunks))
+        # assert len(chunks) == 10 or len(chunks) == 0, f'Actual length: {len(chunks)}'
+        # num_structure_tokens = len(chunks)
+
+        structure_ids = torch.empty(0, dtype=torch.long)
+        for cfc in chunks:
+            cfc_ids = structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=args.max_structure_length).input_ids[0]
+            structure_ids = torch.hstack([structure_ids, F.pad(cfc_ids, (0, args.max_structure_length-len(cfc_ids)), value=structure_tokenizer.pad_token_id)])
+
+        lr_budget = args.max_seq_length - args.gen_length - 3  # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+
+        if args.cfc_place == 'premiddle':
+            # prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}\n# Here are some relevant code fragments from other files of the repo:{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
+            prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
+        elif args.cfc_place == 'preprefix':
+            prompt = f"{STRUCTURE_TOKEN * num_structure_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
+
+        return prompt, structure_ids, torch.tensor([num_structure_tokens])
+
+    elif args.data_prefix == 'code_cfc_qwen_slicing':
+        
+        lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
+        skip = False
+        # all_lines = []
+        all_lines_chunked = []
+        current_lines = []
+        chunks = []
+        for line in lines:
+            if line.startswith('# the below code fragment can be found in:'):
+                skip = True
+                if current_lines:
+                    # all_lines.extend(current_lines)
+                    all_lines_chunked.append(current_lines)
+                current_lines = []
+            elif skip:  # skipping the file path
+                skip = False
+            elif line.strip(): # skipping empty lines
+                current_lines.append(line)
+        if current_lines:
+            # all_lines.extend(current_lines)
+            all_lines_chunked.append(current_lines)
+
+        # splitting into chunks of length chunk_size
+        chunk_size = 30
+        # chunks = ['\n'.join(all_lines[i:i + chunk_size]) for i in range(0, len(all_lines), chunk_size)]
+        chunks = ['\n'.join(all_lines_chunked[j][i:i + chunk_size]) for j in range(len(all_lines_chunked)) for i in range(0, len(all_lines_chunked[j]), chunk_size)]
+
+        # restrict number of injection tokens (RAG files)
+        num_structure_tokens = min(args.num_structure_tokens, len(chunks))
+        chunks = chunks[:num_structure_tokens]
+
         structure_ids = torch.empty(0, dtype=torch.long)
         for cfc in chunks:
             cfc_ids = structure_tokenizer(cfc, return_tensors='pt', truncation=True, max_length=args.max_structure_length).input_ids[0]
@@ -152,7 +215,12 @@ def prepare_prompt(args,
 
         left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-(args.max_seq_length - args.gen_length - num_structure_tokens - args.right_context_length):])
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:args.right_context_length])
-        prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
+
+        if args.cfc_place == 'premiddle':
+            # prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}\n# Here are some relevant code fragments from other files of the repo:{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
+            prompt = f"{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{STRUCTURE_TOKEN * num_structure_tokens}{fim_middle}"
+        elif args.cfc_place == 'preprefix':
+            prompt = f"{STRUCTURE_TOKEN * num_structure_tokens}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}"
 
         return prompt, structure_ids, torch.tensor([num_structure_tokens])
 
@@ -182,7 +250,64 @@ def prepare_prompt(args,
         right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
         crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode(crossfile_cxt)[:args.cfc_seq_length])
 
-        prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+        if args.cfc_place == 'premiddle':
+            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+        elif args.cfc_place == 'preprefix':
+            prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
+
+        return prompt, None, None
+
+    elif args.data_prefix == 'default_cfc_compressed':
+
+        # making the same lr_budget as for other experiments, not considering cfc length
+        lr_budget = args.max_seq_length - args.gen_length - 3 # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+        crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode(entry["crossfile_context_qwen_compressed"])[:args.cfc_seq_length])
+
+        if args.cfc_place == 'premiddle':
+            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+        elif args.cfc_place == 'preprefix':
+            prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
+
+        return prompt, None, None
+
+    elif args.data_prefix == 'default_cfc_summarized':
+
+        # making the same lr_budget as for other experiments, not considering cfc length
+        lr_budget = args.max_seq_length - args.gen_length - 3 # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+        crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode(entry["crossfile_context_qwen_summarized"])[:args.cfc_seq_length])
+
+        if args.cfc_place == 'premiddle':
+            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+        elif args.cfc_place == 'preprefix':
+            prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
+
+        return prompt, None, None
+
+    elif args.data_prefix == 'default_cfc_zipped':
+
+        # making the same lr_budget as for other experiments, not considering cfc length
+        lr_budget = args.max_seq_length - args.gen_length - 3 # 3 tokens for FIM
+        rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
+        lc_budget = int(rc_budget * args.lc_rc_ratio)
+
+        left_cxt_truncated = tokenizer.decode(tokenizer.encode(left_cxt)[-lc_budget:])
+        right_cxt_truncated = tokenizer.decode(tokenizer.encode(right_cxt)[:rc_budget])
+        crossfile_cxt_truncated = tokenizer.decode(tokenizer.encode(entry["crossfile_context_zipt5_compressed"])[:args.cfc_seq_length])
+
+        if args.cfc_place == 'premiddle':
+            prompt = f'{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{crossfile_cxt_truncated}{fim_middle}'
+        elif args.cfc_place == 'preprefix':
+            prompt = f'{crossfile_cxt_truncated}{fim_prefix}{left_cxt_truncated}{fim_suffix}{right_cxt_truncated}{fim_middle}'
 
         return prompt, None, None
 
@@ -198,16 +323,8 @@ def build_dataset(args, code_tokenizer, ast_tokenizer, fim_tokens):
     data = []
     for entry in raw_data:
 
-        left_cxt = entry["prompt"]
-        right_cxt = entry["right_context"]
-        crossfile_cxt = None
-        if 'crossfile_context' in entry:
-            crossfile_cxt = entry["crossfile_context"] if type(entry["crossfile_context"]) == str else entry["crossfile_context"]['text']
-
         entry['llm_prompt'], entry['structure_ids'], entry['num_structure_tokens'] = \
-            prepare_prompt(
-                args, code_tokenizer, ast_tokenizer, fim_tokens, left_cxt, right_cxt, crossfile_cxt)
-
+            prepare_prompt(args, code_tokenizer, ast_tokenizer, fim_tokens, entry)
         data.append(entry)
 
     return data
@@ -243,6 +360,7 @@ def parse_args():
     parser.add_argument('--config', type=str, help='path to args config')
     parser.add_argument("--do_sample", action='store_true')
     parser.add_argument("--lc_rc_ratio", default=2.0)
+    parser.add_argument('--cfc_place', choices=['premiddle', 'preprefix'])
 
     args = parser.parse_args()
     return args
@@ -270,14 +388,14 @@ def main_worker(rank, world_size, model, tokenizer, data, args):
             inputs = tokenizer(entry['llm_prompt'], return_tensors='pt').to(device)
             cut_at = inputs.input_ids.shape[1]
 
-            if args.data_prefix not in ['default', 'default_cfc']:
+            num_structure_tokens = entry['num_structure_tokens']
+            if not args.data_prefix.startswith('default') and num_structure_tokens > 0:
                 structure_ids = entry['structure_ids'].to(device)
-                num_structure_tokens = entry['num_structure_tokens'].to(device)
                 cur_pred = model.module.generate(  # Use model.module to access the original model inside DDP
                     **inputs,
                     do_sample=args.do_sample,
                     structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens,
+                    num_structure_tokens=num_structure_tokens.to(device),
                     max_new_tokens=args.gen_length)
             else:
                 cur_pred = model.module.generate(
@@ -353,6 +471,7 @@ if __name__ == "__main__":
     fim_tokens = get_fim_tokens(args.text_model_id)
     print('fim tokens:', fim_tokens)
     data = build_dataset(args, code_tokenizer, structure_tokenizer, fim_tokens)
+    print(f'Number of samples: {len(data)}')
 
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29500'
