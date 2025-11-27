@@ -11,7 +11,7 @@ STRUCTURE_MODEL_ID=microsoft/unixcoder-base
 
 BENCHMARK=python_line_completion_sparse_bm25.jsonl
 
-MODEL_CHECKPOINT=/home/jovyan/cherniuk/LlavaCode/ckpt/qwen7_unixcoder_3l_python_emes_stack.ckpt
+MODEL_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_python_emes_stack.ckpt
 
 OUTPUT_DIR=results/qwen7_${DATA_PREFIX}_${EXPERIMENT}
 mkdir -p ${OUTPUT_DIR}
