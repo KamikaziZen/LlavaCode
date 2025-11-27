@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DATA_PREFIX=code_cfc_qwen
+DATA_PREFIX=ast_cfc
 NUM_STRUCTURE_TOKENS=10
 EXPERIMENT=repoeval
 
