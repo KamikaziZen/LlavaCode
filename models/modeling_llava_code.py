@@ -120,23 +120,39 @@ class LlavaCodeCausalLMOutputWithPast(ModelOutput):
 class LlavaCodeModel(LlavaCodePreTrainedModel):
     _checkpoint_conversion_mapping = {"language_model.model": "language_model"}
 
-    def __init__(self, config: LlavaCodeConfig):
+    def __init__(self, config: LlavaCodeConfig, model_path=None):
         super().__init__(config)
+
+        if model_path:
+            state_dict = torch.load(model_path, map_location="cuda")["state_dict"]
+            state_dict = {
+                k.removeprefix("model."): v
+                for k, v in state_dict.items()
+                if k.startswith("model.")}
+
+            encoder = AutoModel.from_config(
+                AutoConfig.from_pretrained(self.config.structure_config.model_id))
+            self.language_model = AutoModelForCausalLM.from_config(
+                AutoConfig.from_pretrained(self.config.text_config.model_id))
+        else:
+            encoder = AutoModel.from_pretrained(self.config.structure_config.model_id)
+            self.language_model = AutoModelForCausalLM.from_pretrained(self.config.text_config.model_id)
+
         if 'unixcoder' in self.config.structure_config.model_id.lower():
             self.structure_model = UniXcoderEncoder(
-                AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
+                encoder, config=self.config.structure_config)
         elif 'qwen' in self.config.structure_config.model_id.lower():
             self.structure_model = QwenEmbedEncoder(
-                AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
+                encoder, config=self.config.structure_config)
         # elif 'gnn_encoder' in self.config.structure_config.model_id.lower():
         #     self.structure_model = EnhancedGNNEncoder(
         #         hidden_size=self.config.structure_config.hidden_size, num_node_types=self.config.structure_config.num_node_types)
         #     self.structure_model.load_state_dict(torch.load(self.config.structure_config.model_id))
-        elif 'graphcodebert' in self.config.structure_config.model_id.lower():
-            self.structure_model = RobertaForSequenceClassification.from_pretrained(self.config.structure_config.model_id, config=self.config.structure_config)
-        elif 'jina' in self.config.structure_config.model_id.lower():
-            self.structure_model = JinaEncoder(
-                model=AutoModel.from_pretrained(self.config.structure_config.model_id, trust_remote_code=True), config=self.config.structure_config)
+        # elif 'graphcodebert' in self.config.structure_config.model_id.lower():
+        #     self.structure_model = RobertaForSequenceClassification.from_pretrained(self.config.structure_config.model_id, config=self.config.structure_config)
+        # elif 'jina' in self.config.structure_config.model_id.lower():
+        #     self.structure_model = JinaEncoder(
+        #         model=AutoModel.from_pretrained(self.config.structure_config.model_id, trust_remote_code=True), config=self.config.structure_config)
         else:
             raise ValueError(f'Unrecognized structure model: {self.structure_model}')
 
@@ -150,20 +166,23 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
 
         self.vocab_size = config.text_config.vocab_size
 
-        if self.config.quantization_config:
-            self.language_model = AutoModelForCausalLM.from_pretrained(
-                self.config.text_config.model_id,
-                quantization_config=self.config.quantization_config,
-                device_map=None,
-                low_cpu_mem_usage=True
-            )
-        else:
-            self.language_model = AutoModelForCausalLM.from_pretrained(self.config.text_config.model_id)
+        # if self.config.quantization_config:
+        #     self.language_model = AutoModelForCausalLM.from_pretrained(
+        #         self.config.text_config.model_id,
+        #         quantization_config=self.config.quantization_config,
+        #         device_map=None,
+        #         low_cpu_mem_usage=True
+        #     )
+        # else:
+        #     self.language_model = AutoModelForCausalLM.from_pretrained(self.config.text_config.model_id)
 
         self.fim_tokens = get_fim_tokens(self.config.text_config.model_id)
 
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.post_init()
+
+        if model_path:
+            self.load_state_dict(state_dict)
         # print('post init', self.multi_modal_projector.linear_1.weight.data.norm(2))
 
     def get_input_embeddings(self):
@@ -311,9 +330,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     }
     # _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config: LlavaCodeConfig):
+    def __init__(self, config: LlavaCodeConfig, model_path=None):
         super().__init__(config)
-        self.model = LlavaCodeModel(config)
+        self.model = LlavaCodeModel(config, model_path)
         # self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
         self.vocab_size = self.config.text_config.vocab_size
