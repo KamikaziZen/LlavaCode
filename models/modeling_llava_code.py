@@ -36,7 +36,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 from .config import LlavaCodeConfig
-from .projector import LlavaCodeMultiModalProjector3L, LlavaCodeMultiModalProjector4L
+from .projector import (
+    LlavaCodeMultiModalProjector2L,
+    LlavaCodeMultiModalProjector3L,
+    LlavaCodeMultiModalProjector4L
+)
 from .modeling_unixcoder import UniXcoderEncoder
 from .modeling_gnn_encoder import EnhancedGNNEncoder
 from .modeling_jina import JinaEncoder
@@ -119,7 +123,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
     def __init__(self, config: LlavaCodeConfig):
         super().__init__(config)
         if 'unixcoder' in self.config.structure_config.model_id.lower():
-            # self.structure_model = UniXcoder(self.config.structure_config.model_id)
             self.structure_model = UniXcoderEncoder(
                 AutoModel.from_pretrained(self.config.structure_config.model_id), config=self.config.structure_config)
         elif 'qwen' in self.config.structure_config.model_id.lower():
@@ -264,17 +267,12 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         else:
             structure_embeddings = None
 
-        if self.injector is not None:
-            self.injector.injection_tensor = torch.zeros_like(inputs_embeds)
         if structure_features is not None:
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
             assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), \
                 f'Mask does not correspond to the number of structure features: {inputs_embeds[special_structure_mask].numel()} != {structure_features.numel()}'
-            if self.injector is not None:
-                self.injector.injection_tensor = torch.zeros_like(inputs_embeds).to(inputs_embeds.device).masked_scatter(special_structure_mask, structure_features)
-            else:
-                inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
+            inputs_embeds = inputs_embeds.masked_scatter(special_structure_mask, structure_features)
 
         outputs = self.language_model(
             # input_ids: Optional[torch.Tensor] = None,
@@ -1011,10 +1009,6 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 "weight_decay": 0.0,
             },
         ]
-        # if self.model.injector is not None:
-        #     optim_groups.append({
-        #         "params": list(self.model.injector.parameters()),
-        #         "weight_decay": 0.0})
 
         # optimizer = FusedAdam(optim_groups, lr=self.lr)
         optimizer = AdamW(optim_groups, lr=self.lr)

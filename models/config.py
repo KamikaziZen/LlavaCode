@@ -66,12 +66,13 @@ class LlavaCodeConfig(PretrainedConfig):
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
+        projector='L3',
         quantize=False,
-        injector=False,
         **kwargs,
     ):
         self.projector_hidden_act = projector_hidden_act
         self.multimodal_projector_bias = multimodal_projector_bias
+        self.projector = projector
 
         self.structure_config = structure_config
 
@@ -92,5 +93,3 @@ class LlavaCodeConfig(PretrainedConfig):
 
         self.structure_token_id = structure_token_id
         self.pad_token_id = pad_token_id  # has to go after super() init
-
-        self.injector = injector

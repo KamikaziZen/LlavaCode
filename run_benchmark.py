@@ -335,6 +335,7 @@ def parse_args():
 
     parser.add_argument("--text_model_id", type=str, required=True)
     parser.add_argument("--structure_model_id", type=str, required=True)
+    parser.add_argument("--projector", type=str, choices=['3L', '4L'], help='projector architecture')
     parser.add_argument("--language", type=str, required=True, help="language name")
     parser.add_argument("--model_checkpoint", type=str)
     parser.add_argument("--projector_checkpoint", type=str)
@@ -455,10 +456,10 @@ if __name__ == "__main__":
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
-                                    injector=False)
+                                    projector=args.projector)
 
     if args.model_checkpoint is not None:
-        logger.info(f"Loading checkpoint: {args.model_checkpoint}")
+        print(f"Loading checkpoint: {args.model_checkpoint}")
         model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
             args.model_checkpoint, config=configuration)
     else:
