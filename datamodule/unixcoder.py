@@ -145,6 +145,7 @@ class AstCfcDataset(Dataset):
     def __init__(self,
                  data,
                  training_stage,
+                 language,
                  ast_tokenizer,
                  code_tokenizer,
                  structure_token_id,
@@ -174,6 +175,7 @@ class AstCfcDataset(Dataset):
         self.num_structure_tokens = num_structure_tokens
         self.fim_tokens_ids = fim_tokens_ids
         self.training_stage = training_stage
+        self.language = language
 
     def __len__(self):
         return len(self.data)
@@ -190,7 +192,7 @@ class AstCfcDataset(Dataset):
 
             input_ids = self.code_tokenizer(cfc).input_ids  # turning cfc to tokens of the language model
 
-            ast_tokens = AST(cfc, 'python', self.ast_tokenizer)
+            ast_tokens = AST(cfc, self.language, self.ast_tokenizer)
             ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
             chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
                 + ast_tokens + [self.ast_tokenizer.sep_token]
@@ -219,7 +221,7 @@ class AstCfcDataset(Dataset):
             structure_ids = torch.empty(0, dtype=torch.long)
             for chunk in content['crossfile_array'][:num_structure_tokens]:
                 cfc = '\n'.join(chunk.splitlines()[1:])  # removing file path in the first line
-                ast_tokens = AST(cfc.replace('#', ''), 'python', self.ast_tokenizer)  # AST is not calculated for comments
+                ast_tokens = AST(cfc.replace('#', ''), self.language, self.ast_tokenizer)  # AST is not calculated for comments
                 ast_tokens = ast_tokens[:self.max_structure_length - 4]  # 4 special tokens for unixcoder
                 chunk_tokens = [self.ast_tokenizer.cls_token, "<encoder-only>", self.ast_tokenizer.sep_token] \
                     + ast_tokens + [self.ast_tokenizer.sep_token]

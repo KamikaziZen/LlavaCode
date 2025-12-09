@@ -66,7 +66,7 @@ class LlavaCodeConfig(PretrainedConfig):
         projector_hidden_act="gelu",
         tie_word_embeddings=False,
         multimodal_projector_bias=True,
-        projector='L3',
+        projector='3L',
         quantize=False,
         **kwargs,
     ):

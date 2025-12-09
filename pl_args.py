@@ -56,6 +56,7 @@ def add_model_args(parent_parser):
     # CodeGen specific arguments
     parser.add_argument("--text_model_id", type=str, required=True)
     parser.add_argument("--structure_model_id", type=str, required=True)
+    parser.add_argument("--language", type=str, default='python')
     parser.add_argument("--projector", type=str, choices=['3L', '4L'], help='projector architecture')
 
     parser.add_argument("--num_structure_tokens", type=int, default=5)

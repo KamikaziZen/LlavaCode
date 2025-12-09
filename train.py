@@ -87,13 +87,19 @@ if __name__ == "__main__":
         #     for k, v in state_dict.items()
         #     if k.startswith("model.multi_modal_projector.")}
         # model.multi_modal_projector.load_state_dict(projector_state_dict)
+
+        projector_state_dict = model.multi_modal_projector.state_dict()
+        save_name = f"{args.model_checkpoint.split('/')[-1].rstrip('.ckpt')}_projector.pth"
+        save_dir = os.path.dirname(args.model_checkpoint)
+        torch.save(projector_state_dict, os.path.join(save_dir, save_name))
+        import sys
+        sys.exit(0)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
     if args.projector_checkpoint:
-        print('Loading projection weighs')
-        model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint))
+        print(f'Loading projection weighs from: {args.projector_checkpoint}')
+        model.multi_modal_projector.load_state_dict(torch.load(args.projector_checkpoint), strict=True)
 
-    # structure model weights are always frozen
     for p in model.model.structure_model.parameters():
         p.requires_grad = False
 
@@ -130,8 +136,11 @@ if __name__ == "__main__":
         structure_tokenizer=structure_tokenizer,
         structure_token_id=structure_token_id,
         num_structure_tokens=args.num_structure_tokens,
+        language=args.language
     )
     print('Training stage:', args.training_stage)
+    import datasets
+    print('datasetsver', datasets.__version__)
     data.setup()
     args.num_training_examples = len(data.train_dataloader())
 
@@ -146,7 +155,7 @@ if __name__ == "__main__":
     )
     callbacks.append(checkpoint_callback)
 
-    tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1]]
+    tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1], 'TheStack2', args.language]
     clearml_logger = ClearMLLogger(args.log_dir, project_name='LlavaCode', task_name=args.exp_name, tags=tags)
     csv_logger = CSVLogger(args.log_dir, name=args.exp_name, version="")
 

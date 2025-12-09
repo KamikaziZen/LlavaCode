@@ -7,8 +7,7 @@ from tree_sitter import Language, Parser
 
 # Load tree-sitter parser
 parsers = {}
-# for lang in ['python','ruby','java','go','javascript','php','c','cpp','c_sharp']:
-for lang in ['python']:
+for lang in ['python', 'java']:
     try:
         LANGUAGE = Language('parser/my-languages.so', lang)
     except Exception as e:

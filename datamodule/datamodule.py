@@ -68,7 +68,7 @@ class LlavaCodeDataCollator:
 class LlavaCodeDataModule(LightningDataModule):
     def __init__(self, data_prefix, train_datadir, valid_datadir, train_batch_size,
                  valid_batch_size, code_tokenizer, structure_tokenizer, structure_token_id,
-                 fim_tokens, training_stage, num_structure_tokens, num_workers=0,):
+                 fim_tokens, training_stage, num_structure_tokens, language, num_workers=0,):
         super(LlavaCodeDataModule, self).__init__()
         self.data_prefix = data_prefix
         self.train_datadir = train_datadir
@@ -80,10 +80,10 @@ class LlavaCodeDataModule(LightningDataModule):
         self.structure_tokenizer = structure_tokenizer
         self.structure_token_id = structure_token_id
         self.num_structure_tokens = num_structure_tokens
+        self.language = language
 
         self.fim_tokens = fim_tokens
         self.fim_tokens_ids = torch.tensor(self.code_tokenizer.convert_tokens_to_ids(fim_tokens))
-
         print('FIM tokens:', fim_tokens)
 
         self.data_collator = LlavaCodeDataCollator(code_tokenizer, structure_tokenizer)
@@ -98,6 +98,7 @@ class LlavaCodeDataModule(LightningDataModule):
             return AstCfcDataset(
                 raw_data,
                 training_stage=self.training_stage,
+                language=self.language,
                 code_tokenizer=self.code_tokenizer,
                 ast_tokenizer=self.structure_tokenizer,
                 fim_tokens_ids=self.fim_tokens_ids,
