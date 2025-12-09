@@ -206,7 +206,7 @@ def prepare_prompt(args,
 
         structure_ids = torch.empty(0, dtype=torch.long)
         for cfc in chunks:
-            ast_tokens = AST(cfc.replace('#', ''), 'python', structure_tokenizer)  # decommenting
+            ast_tokens = AST(cfc.replace('#', ''), args.langauge, structure_tokenizer)  # decommenting
             ast_tokens = ast_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
             chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
                 + ast_tokens + [structure_tokenizer.sep_token]
