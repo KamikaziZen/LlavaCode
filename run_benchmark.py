@@ -1,6 +1,10 @@
-import argparse
-import json
 import os 
+os.environ['MASTER_ADDR'] = '127.0.0.1'
+os.environ['MASTER_PORT'] = '29500'
+# Prevent NCCL from probing unsupported interfaces
+os.environ["NCCL_SOCKET_IFNAME"] = "lo"
+os.environ["NCCL_IB_DISABLE"] = "1"
+
 from transformers import (
     AutoTokenizer,
     RobertaTokenizer,
@@ -16,6 +20,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 import math
 from tqdm import tqdm
 import re
+import argparse
+import json
 
 from models import LlavaCodeConfig, LlavaCodeForConditionalGeneration
 from eval_metric import compute_metric_stmt
@@ -206,7 +212,7 @@ def prepare_prompt(args,
 
         structure_ids = torch.empty(0, dtype=torch.long)
         for cfc in chunks:
-            ast_tokens = AST(cfc.replace('#', ''), args.langauge, structure_tokenizer)  # decommenting
+            ast_tokens = AST(cfc.replace('#', ''), args.language, structure_tokenizer)  # decommenting
             ast_tokens = ast_tokens[:args.max_structure_length - 4]  # 4 special tokens for unixcoder
             chunk_tokens = [structure_tokenizer.cls_token, "<encoder-only>", structure_tokenizer.sep_token] \
                 + ast_tokens + [structure_tokenizer.sep_token]
@@ -473,9 +479,6 @@ if __name__ == "__main__":
     print('fim tokens:', fim_tokens)
     data = build_dataset(args, code_tokenizer, structure_tokenizer, fim_tokens)
     print(f'Number of samples: {len(data)}')
-
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'
 
     world_size = torch.cuda.device_count()
     torch.multiprocessing.spawn(main_worker, nprocs=world_size, args=(world_size, model, code_tokenizer, data, args))
