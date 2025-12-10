@@ -73,7 +73,7 @@ if __name__ == "__main__":
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
                                     quantize=args.quantize,
-                                    injector=False)
+                                    projector=args.projector)
 
     if args.model_checkpoint is not None:
         logger.info(f"Loading checkpoint: {args.model_checkpoint}")
