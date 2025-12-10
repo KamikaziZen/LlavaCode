@@ -8,7 +8,7 @@ from tree_sitter import Language, Parser
 from cceval_utils import (
     postprocess_code_lines,
     extract_identifiers,
-    cal_edit_sim,
+    # cal_edit_sim,
     remove_comments
 )
 from eval_metric import cal_edit_sim_repoeval
@@ -33,12 +33,12 @@ def compute_id_match(pred_ids, target_ids):
     return tp, fp, fn
 
 
-def compute_edit_sim(samples):
-    refs, hyps = [], []
-    for s in samples:
-        refs.append(s["target"])
-        hyps.append(s["pred"])
-    return cal_edit_sim(refs, hyps)
+# def compute_edit_sim(samples):
+#     refs, hyps = [], []
+#     for s in samples:
+#         refs.append(s["target"])
+#         hyps.append(s["pred"])
+#     return cal_edit_sim(refs, hyps)
 
 
 def compute_edit_sim_repoeval(samples):
@@ -130,18 +130,18 @@ def compute_metric_stmt_cceval(args):
 
     for idx, trunc_s in enumerate(truncated_samples):
         identifier_em = int(trunc_s["pred_ids"] == trunc_s["target_ids"])
-        es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
+        # es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
         es_repoeval = cal_edit_sim_repoeval([trunc_s["target"]], [trunc_s["pred"]]) * 100
         id_tp, id_fp, id_fn = compute_id_match(trunc_s["pred_ids"], trunc_s["target_ids"])
         id_em.append(identifier_em)
-        edit_similarities.append(es)
+        # edit_similarities.append(es)
         edit_similarities_repoeval.append(es_repoeval)
 
         detailed_results.append({
             "task_id": trunc_s["task_id"],
             "em": em_labels[idx],
-            "es": es,
-            "es_repoeval": es_repoeval,
+            # "es": es,
+            "es": es_repoeval,
             "id_em": identifier_em,
             "id_precision": id_tp / (id_tp + id_fp) if (id_tp + id_fp) != 0 else 0,
             "id_recall": id_tp / (id_tp + id_fn) if (id_tp + id_fn) != 0 else 0,
@@ -165,8 +165,8 @@ def compute_metric_stmt_cceval(args):
     print(
         f"Code Matching: "
         f"EM {em_ratio:.2f}, "
-        f"ES {edit_sim:.2f}, "
-        f"ES RepoEval {edit_sim_repoeval:.2f}, "
+        # f"ES {edit_sim:.2f}, "
+        f"ES {edit_sim_repoeval:.2f}, "
     )
 
     print(
@@ -185,8 +185,8 @@ def compute_metric_stmt_cceval(args):
     with open(f"{args.output_dir}/results.json", 'w') as f:
         res = {
             "em": em_ratio,
-            "es": edit_sim,
-            "es_repoeval": edit_sim_repoeval,
+            # "es": edit_sim,
+            "es": edit_sim_repoeval,
             "id_em": id_em_ratio,
             "id_precision": id_precision,
             "id_recall": id_recall,

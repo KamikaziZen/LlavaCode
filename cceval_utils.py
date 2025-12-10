@@ -19,7 +19,7 @@ from typing import List
 
 import timeout_decorator
 import torch
-from fuzzywuzzy import fuzz
+# from fuzzywuzzy import fuzz
 from nltk.tokenize import RegexpTokenizer
 from sacrebleu.tokenizers.tokenizer_intl import TokenizerV14International
 
@@ -41,14 +41,14 @@ str_tokenizer = TokenizerV14International()
 code_tokenizer = RegexpTokenizer(r'\w+')
 
 
-def cal_edit_sim(references, hypotheses):
-    total = len(references)
-    edit_sim = 0.0
-    for pred, gt in zip(hypotheses, references):
-        pred = pred.strip()
-        gt = gt.strip()
-        edit_sim += fuzz.ratio(pred, gt)
-    return edit_sim / total
+# def cal_edit_sim(references, hypotheses):
+#     total = len(references)
+#     edit_sim = 0.0
+#     for pred, gt in zip(hypotheses, references):
+#         pred = pred.strip()
+#         gt = gt.strip()
+#         edit_sim += fuzz.ratio(pred, gt)
+#     return edit_sim / total
 
 
 @lru_cache(maxsize=5000)

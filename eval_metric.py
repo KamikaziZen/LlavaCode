@@ -6,7 +6,7 @@ import numpy as np
 
 from tqdm import tqdm
 from typing import Callable, List
-from fuzzywuzzy import fuzz
+# from fuzzywuzzy import fuzz
 import editdistance
 from functools import partial
 import torch.multiprocessing as mp
@@ -17,14 +17,14 @@ from tree_sitter.binding import Node as TSNode
 parser = None
 
 
-def cal_edit_sim(references, hypotheses):
-    total = len(references)
-    edit_sim = 0.0
-    for pred, gt in zip(hypotheses, references):
-        pred = pred.strip()
-        gt = gt.strip()
-        edit_sim += fuzz.ratio(pred, gt)
-    return edit_sim / total
+# def cal_edit_sim(references, hypotheses):
+#     total = len(references)
+#     edit_sim = 0.0
+#     for pred, gt in zip(hypotheses, references):
+#         pred = pred.strip()
+#         gt = gt.strip()
+#         edit_sim += fuzz.ratio(pred, gt)
+#     return edit_sim / total
 
 
 def cal_edit_sim_repoeval(references, hypotheses):
@@ -217,9 +217,7 @@ def compute_metric_stmt(args):
                 "groundtruth": ex["groundtruth"]
             }
 
-    # assert len(samples) == len(examples), f"{len(samples)} != {len(examples)}"
-    if len(samples) == len(examples):
-        print('Warning: len(samples) ({}) == len(examples) ({})'.format(len(samples), len(examples)))
+    assert len(samples) == len(examples), f"{len(samples)} != {len(examples)}"
 
     global parser
     # language = Language(args.ts_lib, "python")
@@ -248,33 +246,33 @@ def compute_metric_stmt(args):
 
     detailed_results = []
     exact_match = 0
-    edit_sim = 0
+    # edit_sim = 0
     edit_sim_repoeval = 0
 
     for idx, trunc_s in enumerate(truncated_samples):
-        es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
+        # es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
         es_repoeval = cal_edit_sim_repoeval([trunc_s["target"]], [trunc_s["pred"]])
         em = cal_exact_match([trunc_s["target"]], [trunc_s["pred"]])
-        edit_sim += es
+        # edit_sim += es
         edit_sim_repoeval += es_repoeval
         exact_match += em
 
         detailed_results.append({
             "task_id": trunc_s["task_id"],
             "em": em,
-            "es": es,
+            # "es": es,
             "es_repoeval": es_repoeval
         })
 
     em_ratio = round(exact_match / len(truncated_samples) * 100, 2)
-    edit_sim = round(edit_sim / len(truncated_samples), 2)
+    # edit_sim = round(edit_sim / len(truncated_samples), 2)
     edit_sim_repoeval = round(edit_sim_repoeval / len(truncated_samples) * 100, 2)
 
     print(
         f"Code Matching: "
         f"EM {em_ratio:.2f}, "
-        f"ES {edit_sim:.2f}, "
-        f"ES RepoEval {edit_sim_repoeval:.2f}"
+        # f"ES {edit_sim:.2f}, "
+        f"ES {edit_sim_repoeval:.2f}"
     )
 
     with open(f"{args.output_dir}/detailed_results.json", 'w') as f:
@@ -285,8 +283,8 @@ def compute_metric_stmt(args):
     with open(f"{args.output_dir}/results.json", 'w') as f:
         res = {
             "em": em_ratio,
-            "es": edit_sim,
-            "es_repoeval": edit_sim_repoeval,
+            # "es": edit_sim,
+            "es": edit_sim_repoeval,
             "total": len(truncated_samples)
         }
         f.write(json.dumps(res, indent=2))
@@ -362,33 +360,33 @@ def compute_metric_stmt_custom(predictions_file, prompt_file, output_dir,
 
     detailed_results = []
     exact_match = 0
-    edit_sim = 0
+    # edit_sim = 0
     edit_sim_repoeval = 0
 
     for idx, trunc_s in enumerate(truncated_samples):
-        es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
+        # es = cal_edit_sim([trunc_s["target"]], [trunc_s["pred"]])
         es_repoeval = cal_edit_sim_repoeval([trunc_s["target"]], [trunc_s["pred"]])
         em = cal_exact_match([trunc_s["target"]], [trunc_s["pred"]])
-        edit_sim += es
+        # edit_sim += es
         edit_sim_repoeval += es_repoeval
         exact_match += em
 
         detailed_results.append({
             "task_id": trunc_s["task_id"],
             "em": em,
-            "es": es,
-            "es_repoeval": es_repoeval
+            # "es": es,
+            "es": es_repoeval
         })
 
     em_ratio = round(exact_match / len(truncated_samples) * 100, 2)
-    edit_sim = round(edit_sim / len(truncated_samples), 2)
+    # edit_sim = round(edit_sim / len(truncated_samples), 2)
     edit_sim_repoeval = round(edit_sim_repoeval / len(truncated_samples) * 100, 2)
 
     print(
         f"Code Matching: "
         f"EM {em_ratio:.2f}, "
-        f"ES {edit_sim:.2f}, "
-        f"ES RepoEval {edit_sim_repoeval:.2f}"
+        # f"ES {edit_sim:.2f}, "
+        f"ES{edit_sim_repoeval:.2f}"
     )
 
     with open(f"{output_dir}/detailed_results{out_f_suffix}.json", 'w') as f:
@@ -399,8 +397,8 @@ def compute_metric_stmt_custom(predictions_file, prompt_file, output_dir,
     with open(f"{output_dir}/results{out_f_suffix}.json", 'w') as f:
         res = {
             "em": em_ratio,
-            "es": edit_sim,
-            "es_repoeval": edit_sim_repoeval,
+            # "es": edit_sim,
+            "es": edit_sim_repoeval,
             "total": len(truncated_samples)
         }
         f.write(json.dumps(res, indent=2))
