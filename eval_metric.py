@@ -1,4 +1,5 @@
 import re
+import os
 import sys
 import json
 import timeout_decorator
@@ -198,6 +199,38 @@ def process_examples(task, args):
     }
     return trunc_s
 
+def process_examples_pass(task, args):
+    sample, ex = args
+    global parser
+    
+    target = ex["groundtruth"]
+    
+    preds_trunc = []
+    for pr in sample["pred"]:
+        prediction = pr
+
+        if task == "function_completion":
+            status, prediction = get_valid_completion(ex["prompt"], prediction, parser)
+            if status == "parseable":
+                try:
+                    prediction = get_function_completion(ex["prompt"], prediction, parser)
+                    target = get_function_completion(ex["prompt"], target, parser)
+                except:
+                    print(f'[warning] parsing failed: task_id:{ex["task_id"]}')
+            else:
+                print(f'[warning] parsing failed: task_id:{ex["task_id"]}')
+        else:
+            num_target_lines = sum([1 for l in target.split("\n") if l.strip()])
+            pred_lines = [l for l in prediction.split("\n") if l.strip()][:num_target_lines]
+            prediction = "\n".join(pred_lines)
+        preds_trunc.append(prediction)
+
+    trunc_s = {
+        "task_id": sample["task_id"],
+        "pred": preds_trunc,
+        "target": target
+    }
+    return trunc_s
 
 def compute_metric_stmt(args):
     with open(f"{args.output_dir}/prediction.jsonl", "r") as f_pred:
@@ -290,7 +323,98 @@ def compute_metric_stmt(args):
             "total": len(truncated_samples)
         }
         f.write(json.dumps(res, indent=2))
+        
+def sort_key(x):
+    repo, num = x.split('/')[0], x.split('/')[1]
+    return (repo, int(num))
 
+def preprocess_predictions_for_pass(args):
+    with open(f"{args.output_dir}/prediction.jsonl", "r") as f_pred:
+        samples = []
+        for l in f_pred.readlines():
+            samples.append(json.loads(l))
+
+    examples = {}
+    data = []
+    with open(args.prompt_file, "r") as f_in:
+        for l in f_in.readlines():
+            ex = json.loads(l)
+            if hasattr(args, "focused_repo") and args.focused_repo and args.focused_repo not in re.sub('/', '_', ex['metadata']['repository']):
+                continue
+            examples[ex["metadata"]["task_id"]] = {
+                "task_id": ex["metadata"]["task_id"],
+                "prompt": ex["prompt"],
+                "groundtruth": ex["groundtruth"]
+            }
+            skip = False
+            for repo in ['CarperAI_trlx', 'google_lightweight_mmm', 'lucidrains_imagen-pytorch']:
+                if repo in ex['metadata']['task_id']:
+                    skip = True
+            if skip:
+                continue
+            data.append(ex)
+    benchmark = sorted(data, key=lambda x: sort_key(x['metadata']['task_id']))
+
+    # assert len(samples) == len(examples), f"{len(samples)} != {len(examples)}"
+    if len(samples) == len(examples):
+        print('Warning: len(samples) ({}) == len(examples) ({})'.format(len(samples), len(examples)))
+
+    global parser
+    # language = Language(args.ts_lib, "python")
+    ts_lang = args.language
+    if ts_lang == 'csharp':
+        ts_lang = 'c_sharp'
+    language = Language('parser/my-languages.so', ts_lang)
+    parser = Parser()
+    parser.set_language(language)
+
+    truncated_samples = []
+    print("post-processing samples ...")
+    pool = mp.Pool(mp.cpu_count() - 1)
+    worker = partial(process_examples_pass, args.task)
+
+    with tqdm(total=len(samples)) as pbar:
+        for trunc_s in pool.imap_unordered(worker, zip(samples, [examples[s["task_id"]] for s in samples])):
+            truncated_samples.append(trunc_s)
+            pbar.update()
+
+    with open(f"{args.output_dir}/prediction_truncated.jsonl", 'w', encoding="utf-8") as pt:
+        for trunc_s in truncated_samples:
+            pt.write(json.dumps(trunc_s) + "\n")
+       
+    data = []     
+    with open(args.prompt_file, 'r') as f:
+        for line in f:
+            ex = json.loads(line)
+            data.append(ex)
+    benchmark = sorted(data, key=lambda x: sort_key(x['metadata']['task_id']))
+    predictions = sorted(truncated_samples, key=lambda x: sort_key(x['task_id']))
+    
+
+
+    final = []
+    for b, p in zip(benchmark, predictions):
+        assert b['metadata']['task_id'] == p['task_id']
+        skip = True
+        for repo in args.repos_to_keep:
+            if repo in b['metadata']['task_id']:
+                skip = False
+        if skip:
+            continue
+        entry = {
+            'filecontent':[b['full_left_context'] + p['pred'][i] + b['full_right_context'] for i in range(len(p['pred']))],
+            'repository':b['metadata']['task_id'].split('/')[0],
+            'filepath':os.path.join(f'{args.base_dir}/repositories', b['metadata']['filepath']),
+            'task_id':b['metadata']['task_id'].split('/')[1]
+        }
+        final.append(
+            entry
+            )
+    print(len(final))
+        
+    with open(f"{args.output_dir}/input_for_testing_function_{args.data_prefix}_report.jsonl", "w") as fout:
+        for entry in final:
+            fout.write(json.dumps(entry) + "\n")
 
 def compute_metric_stmt_custom(predictions_file, prompt_file, output_dir, 
                                ts_lib, task, focused_repo=None, anchor_file=None, out_f_suffix=""):
