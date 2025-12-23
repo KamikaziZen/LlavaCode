@@ -1,21 +1,16 @@
 #!/bin/bash
 
-#!/bin/bash
-
 DATA_PREFIX=ast_cfc
 NUM_STRUCTURE_TOKENS=10
 
 TRAIN_DATADIR=./stack2_java_test_1k
 VALID_DATADIR=./stack2_java_test_1k
 
-# TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-1.5B
 TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-7B
-# TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-14B
 
 STRUCTURE_MODEL_ID=microsoft/unixcoder-base
-# STRUCTURE_MODEL_ID=Qwen/Qwen3-Embedding-0.6B
 
-MODEL_CHECKPOINT=./ckpt/qwen7_unixcoder_4l_java_2emes_stack2.ckpt
+PROJECTOR_CHECKPOIN=./ckpt/qwen7_unixcoder_3l_java_2emes_stack2.ckpt
 
 TRAINING_STAGE=1
 NUM_DEVICES=2
@@ -28,8 +23,9 @@ python test_java.py \
     --accelerator gpu \
     --text_model_id $TEXT_MODEL_ID \
     --structure_model_id $STRUCTURE_MODEL_ID \
-    --model_checkpoint $MODEL_CHECKPOINT \
-    --projector '4L' \
+    --projector_checkpoint $PROJECTOR_CHECKPOINT \
+    --projector '3L' \
+    --language java \
     --dropout_p 0. \
     --default_root_dir ./ \
     --data_prefix $DATA_PREFIX \
@@ -58,5 +54,5 @@ python test_java.py \
     --precision 'bf16-true' \
     --alpha_kl .0 \
     --kl_temperature 1.0 \
-    --reward em+es \
+    --reward '' \
     --alpha_align 0.0 

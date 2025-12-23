@@ -99,6 +99,7 @@ if __name__ == "__main__":
         structure_tokenizer=structure_tokenizer,
         structure_token_id=structure_token_id,
         num_structure_tokens=args.num_structure_tokens,
+        language=args.language
     )
     print('Training stage:', args.training_stage)
     data.setup()
