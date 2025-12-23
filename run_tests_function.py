@@ -3,6 +3,8 @@ from tqdm.auto import tqdm
 import os
 import argparse
 import subprocess
+import resource
+
 
 def main():
     parser = argparse.ArgumentParser(description='Process JSONL file and run bash tests')
@@ -15,6 +17,8 @@ def main():
     parser.add_argument('--repos', type=str, required=True, nargs='+',
                         default=['amazon-science_patchcore-inspection', 'deepmind_tracr', 'facebookresearch_omnivore', 'leopard-ai_betty', 'maxhumber_redframes'],
                         help='List of repositories to keep')
+    parser.add_argument('--memory_limit_gb', type=int, default=100,
+                        help='Memory limit in GB for each subprocess')
     
     args = parser.parse_args()
     
@@ -23,6 +27,9 @@ def main():
     result_dir = args.result_dir
     
     # os.makedirs('.tmp', exist_ok=True)
+    def limit_memory():
+        MAX_VIRTUAL_MEMORY = args.memory_limit_gb * 1024 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (MAX_VIRTUAL_MEMORY, MAX_VIRTUAL_MEMORY))
 
     for suffix in ['ast_cfc']:
         for repo_name in args.repos:
@@ -39,7 +46,7 @@ def main():
                     if repo != repo_name:
                         continue
                     for index, filecontent in enumerate(entry['filecontent']):
-                        # if os.path.exists(f'/home/jovyan/sukhorukov/LlavaCode/test_results_function_{suffix}_report_final/{repo}_{task_id}_{index}.out'):
+                        # if os.path.exists(f'{args.base_dir}/test_results_function_{suffix}_report_final/{repo}_{task_id}_{index}.out'):
                         #     continue
 
                         with open(f"tmp_filecontent_{repo_name}_function_{suffix}_report_final.txt", "w") as tmp:
@@ -55,7 +62,10 @@ def main():
                             args.base_dir
                         ]
 
-                        result = subprocess.run(cmd)
+                        # result = subprocess.run(cmd)
+                        result = subprocess.run(cmd, preexec_fn=limit_memory)
+                        if result.returncode != 0:
+                            print(f"Process failed for {repo}_{task_id}_{index} with return code {result.returncode}")
 
 
 if __name__ == "__main__":
