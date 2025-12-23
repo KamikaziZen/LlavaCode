@@ -132,4 +132,4 @@ python run_benchmark_pass.py \
     --language python \
     --do_sample \
     --base_dir $BASE_DIR \
-    --repos_to_keep $REPOS_TO_KEEP
+    --repos_to_keep "${REPOS_TO_KEEP[@]}"

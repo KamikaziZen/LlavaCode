@@ -346,10 +346,10 @@ def preprocess_predictions_for_pass(args):
                 "prompt": ex["prompt"],
                 "groundtruth": ex["groundtruth"]
             }
-            skip = False
-            for repo in ['CarperAI_trlx', 'google_lightweight_mmm', 'lucidrains_imagen-pytorch']:
+            skip = True
+            for repo in args.repos_to_keep:
                 if repo in ex['metadata']['task_id']:
-                    skip = True
+                    skip = False
             if skip:
                 continue
             data.append(ex)
