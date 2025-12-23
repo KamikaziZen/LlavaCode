@@ -1,9 +1,7 @@
 import os 
 os.environ['MASTER_ADDR'] = '127.0.0.1'
 os.environ['MASTER_PORT'] = '29500'
-# Prevent NCCL from probing unsupported interfaces
-os.environ["NCCL_SOCKET_IFNAME"] = "lo"
-os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
 
 from transformers import (
     AutoTokenizer,
@@ -139,7 +137,7 @@ def prepare_prompt(args,
         return prompt, structure_ids, torch.tensor([num_structure_tokens])
 
     elif args.data_prefix == 'code_cfc_qwen_slicing':
-        
+
         lines = crossfile_cxt.splitlines()[1:]  # removing the "Here are some examples..." line
         skip = False
         # all_lines = []
