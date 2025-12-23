@@ -2,18 +2,16 @@
 
 DATA_PREFIX=ast_cfc
 NUM_STRUCTURE_TOKENS=10
-EXPERIMENT=repoeval
 
-# TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-1.5B
 TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-7B
 STRUCTURE_MODEL_ID=microsoft/unixcoder-base
-# STRUCTURE_MODEL_ID=Qwen/Qwen3-Embedding-0.6B
 
 BENCHMARK=python_line_completion_sparse_bm25.jsonl
+LANGUAGE=python
 
-MODEL_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_python_emes_stack.ckpt
+PROJECTOR_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_python_emes_stack_projector.pth
 
-OUTPUT_DIR=results/qwen7_${DATA_PREFIX}_${EXPERIMENT}
+OUTPUT_DIR=results/qwen7_${DATA_PREFIX}_${LANGUAGE}
 mkdir -p ${OUTPUT_DIR}
 
 python run_benchmark.py \
@@ -26,7 +24,7 @@ python run_benchmark.py \
     --num_structure_tokens $NUM_STRUCTURE_TOKENS \
     --output_dir $OUTPUT_DIR \
     --cfc_place preprefix \
-    --model_checkpoint $MODEL_CHECKPOINT \
+    --projector_checkpoint $PROJECTOR_CHECKPOINT \
     --projector '3L' \
     --gen_length 50 \
-    --language python
+    --language $LANGUAGE 
