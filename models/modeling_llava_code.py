@@ -761,7 +761,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             pred_text = pred_text.strip()
             gold_text = gold_text.strip()
 
-        ### cumulative precision 1 / L \sum_{i=1}^L P@i
+        # cumulative precision 1 / L \sum_{i=1}^L P@i
         def cumulative_precision(s_gold, s_pred):
             cum_prec = 0.0
             hits = 0
@@ -772,7 +772,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 cum_prec += hits / (i + 1)
             cum_prec = cum_prec / n
             return cum_prec
-        
+
         def weighted_jaccard(s_gold, s_pred):
             n = len(s_gold)
             if n == 0:
@@ -786,16 +786,17 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
             intersection = (weights * match_mask).sum()
             union = weights.sum()
-            
+
             return (intersection / union).item()
-        
+
         cum_prec = cumulative_precision(gold_text, pred_text)
         wji = weighted_jaccard(gold_text, pred_text)
 
-        import json
-        record = {'pred': pred_text, 'gold': gold_text}
-        with open('ast_cfc_java.jsonl', 'a') as f:
-            f.write(json.dumps(record) + "\n")
+        # for debugging
+        # import json
+        # record = {'pred': pred_text, 'target': gold_text}
+        # with open('ast_cfc_java.jsonl', 'a') as f:
+        #     f.write(json.dumps(record) + "\n")
 
         es = 1 - editdistance.eval(pred_text, gold_text) / max(len(pred_text), len(gold_text))
 

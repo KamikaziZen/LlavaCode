@@ -1,12 +1,6 @@
 from transformers import (
-    PreTrainedModel,
-    RobertaForSequenceClassification,
-    AutoModel,
-    AutoModelForCausalLM,
     AutoConfig,
-    AutoTokenizer,
     PretrainedConfig,
-    GenerationMixin,
     BitsAndBytesConfig,
     CONFIG_MAPPING
 )
@@ -35,23 +29,6 @@ class LlavaCodeConfig(PretrainedConfig):
             Whether the model's input and output word embeddings should be tied.
         multimodal_projector_bias (`bool`, *optional*, defaults to `True`):
             Whether to use bias in the multimodal projector.
-
-    Example:
-
-    ```python
-    >>> from transformers import LlavaNextForConditionalGeneration, LlavaNextConfig, CLIPVisionConfig, LlamaConfig
-
-    >>> # Initializing a Llama config
-    >>> text_config = LlamaConfig()
-
-    >>> # Initializing a Llava-Next llava-hf/llava-v1.6-mistral-7b-hf style configuration
-    >>> configuration = LlavaNextConfig(vision_config, text_config)
-
-    >>> # Initializing a model from the llava-hf/llava-v1.6-mistral-7b-hf style configuration
-    >>> model = LlavaNextForConditionalGeneration(configuration)
-
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
     ```"""
 
     model_type = "llava_next"
