@@ -1371,7 +1371,7 @@ if __name__ == "__main__":
 
             prediction = code_tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
             prediction = truncate_trash(prediction)
-            print(f'Shape of the Output sequence: {code_tokenizer(prediction, return_tensors='pt').input_ids.shape}')
+            print(f"Shape of the Output sequence: {code_tokenizer(prediction, return_tensors='pt').input_ids.shape}")
 
             all_preds.append({
                 "task_id": entry["metadata"]["task_id"],
