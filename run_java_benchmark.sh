@@ -9,8 +9,8 @@ STRUCTURE_MODEL_ID=microsoft/unixcoder-base
 BENCHMARK=/home/jovyan/gusak/LlavaCode/java_line_completion_sparse_bm25.jsonl
 LANGUAGE=java
 
-# PROJECTOR_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_python_emes_stack_projector.pth
-PROJECTOR_CHECKPOINT=/mnt/virtual_ai0001053-01336_SR006-nfs3/kamikazi/lightning_logs/qwen7b_ast_cfc_lr5e-5_b64_2*em+es_ent0.9_kl0.0_3L_java_10t/checkpoints/epoch=0-step=1600-Val_Acc_EM=0.7048-Val_Acc_ES=0.8496_projector.pth
+# MODEL_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_java_2emes_stack2.ckpt
+PROJECTOR_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_java_2emes_stack2_projector.pth
 
 OUTPUT_DIR=results/qwen7_${DATA_PREFIX}_${LANGUAGE}
 mkdir -p ${OUTPUT_DIR}

@@ -10,7 +10,7 @@ TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-7B
 
 STRUCTURE_MODEL_ID=microsoft/unixcoder-base
 
-PROJECTOR_CHECKPOIN=./ckpt/qwen7_unixcoder_3l_java_2emes_stack2.ckpt
+PROJECTOR_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_java_2emes_stack2.ckpt
 
 TRAINING_STAGE=1
 NUM_DEVICES=2
