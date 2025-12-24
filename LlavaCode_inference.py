@@ -1379,6 +1379,7 @@ if __name__ == "__main__":
             })
             print(f'Prediction:\n{prediction}')
 
+    os.makedirs(args.output_dir, exist_ok=True)
     with open(f"{args.output_dir}/prediction.jsonl", "w", encoding="utf-8") as f_pred:
         for entry in all_preds:
             if isinstance(entry, list):
