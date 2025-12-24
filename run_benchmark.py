@@ -53,7 +53,7 @@ def prepare_prompt(args,
         current_lines = []
         chunks = []
         for line in lines:
-            if line.startswith('# the below code fragment can be found in:'):
+            if 'the below code fragment can be found in:' in line:
                 skip = True
                 if current_lines:
                     chunks.append('\n'.join(current_lines))
@@ -94,7 +94,7 @@ def prepare_prompt(args,
         current_lines = []
         chunks = []
         for line in lines:
-            if line.startswith('# the below code fragment can be found in:'):
+            if 'the below code fragment can be found in:' in line:
                 skip = True
                 if current_lines:
                     chunks.append('\n'.join(current_lines))
@@ -145,7 +145,7 @@ def prepare_prompt(args,
         current_lines = []
         chunks = []
         for line in lines:
-            if line.startswith('# the below code fragment can be found in:'):
+            if 'the below code fragment can be found in:' in line:
                 skip = True
                 if current_lines:
                     # all_lines.extend(current_lines)
@@ -192,7 +192,7 @@ def prepare_prompt(args,
         current_lines = []
         chunks = []
         for line in lines:
-            if line.startswith('# the below code fragment can be found in:'):
+            if 'the below code fragment can be found in:' in line:
                 skip = True
                 if current_lines:
                     chunks.append('\n'.join(current_lines))
