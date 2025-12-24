@@ -432,7 +432,7 @@ def main_worker(rank, world_size, model, tokenizer, data, args):
                     for entry_ in entry:
                         f_pred.write(json.dumps(entry_) + "\n")
                 else:
-                    f_pred.write(json.dumps(entry_) + "\n")
+                    f_pred.write(json.dumps(entry) + "\n")
 
     dist.destroy_process_group()
 
