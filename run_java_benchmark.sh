@@ -6,7 +6,7 @@ NUM_STRUCTURE_TOKENS=10
 TEXT_MODEL_ID=Qwen/Qwen2.5-Coder-7B
 STRUCTURE_MODEL_ID=microsoft/unixcoder-base
 
-BENCHMARK=/home/jovyan/gusak/LlavaCode/java_line_completion_sparse_bm25.jsonl
+BENCHMARK=java_line_completion_sparse_bm25.jsonl
 LANGUAGE=java
 
 # MODEL_CHECKPOINT=./ckpt/qwen7_unixcoder_3l_java_2emes_stack2.ckpt
