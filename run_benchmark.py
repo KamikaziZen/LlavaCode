@@ -464,8 +464,8 @@ if __name__ == "__main__":
 
     if args.model_checkpoint is not None:
         print(f"Loading checkpoint: {args.model_checkpoint}")
-        model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
-            args.model_checkpoint, config=configuration)
+        model = LlavaCodeForConditionalGeneration(
+            config=configuration, model_path=args.model_checkpoint)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
     if args.projector_checkpoint:
