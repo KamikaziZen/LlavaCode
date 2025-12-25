@@ -58,7 +58,7 @@ To run a single example:
 python LlavaCode_inference.py
 ```
 
-This script reads a test example from file test_example.jsonl and performs an inference and **EM**/**ES** calculations. 
+This script reads a test example from file `test_example.jsonl` and performs an inference and **EM**/**ES** calculations. 
 You can adjust parameters by changing the attributes of ArgsMock class in the beginning of the script. 
 
 For example, change the number of projected cross-file contexts appended to the line completion prompt: 
@@ -66,7 +66,13 @@ For example, change the number of projected cross-file contexts appended to the 
 num_structure_tokens = 10
 ```
 
-num_structure_tokens = 0 preformes inference without cross-file context augmentation.
+`num_structure_tokens = 0` performs inference without cross-file context augmentation.
+
+You can also load the whole model checkpoint from a .ckpt file. For this, change ArgMock attributes to 
+```bash
+model_checkpoint = <path>.ckpt
+projector_checkpoint = None
+```
 
 ## Running the Benchmarks
 
