@@ -206,7 +206,6 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             nodes_to_token_mask = nodes_to_token_mask/(nodes_to_token_mask.sum(-1)+1e-10)[:, :, None]
             avg_embeddings = torch.einsum("abc,acd->abd", nodes_to_token_mask, inputs_embeddings)
             inputs_embeddings = inputs_embeddings*(~nodes_mask)[:, :, None] + avg_embeddings*nodes_mask[:, :, None]
-            print('inputs_emb shape', inputs_embeddings.shape, 'attn mask:', structure_attn_mask.shape, 'pos_idx', structure_pos_idx.shape)
 
             outputs = self.structure_model.roberta(
                 inputs_embeds=inputs_embeddings, attention_mask=structure_attn_mask,
@@ -336,7 +335,9 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         # self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
         self.vocab_size = self.config.text_config.vocab_size
-        # self.language_model.resize_token_embeddings(self.vocab_size)
+        print(f'Embeddings dim before resizing: {self.language_model.get_input_embeddings().weight.data.shape}')
+        self.language_model.resize_token_embeddings(self.vocab_size)
+        print(f'Embeddings dim after resizing: {self.language_model.get_input_embeddings().weight.data.shape}')
         self.pad_token_id = config.pad_token_id
         self.tokenizer = AutoTokenizer.from_pretrained(config.text_config.model_id, use_fast=False)
         self.tokenizer.add_tokens([STRUCTURE_TOKEN])
