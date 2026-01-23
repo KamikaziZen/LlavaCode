@@ -660,24 +660,69 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
 
             # ---- Log probs of greedy tokens ----
-            greedy_input_ids = greedy_ids[:, :-1]
-            greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
-            greedy_logits = self(
-                input_ids=greedy_input_ids,
-                attention_mask=greedy_attention_mask,
-                structure_values=structure_ids,
-                num_structure_tokens=num_structure_tokens
-            ).logits
-            log_probs = F.log_softmax(greedy_logits, dim=-1)
+            with torch.no_grad():
+                greedy_input_ids = greedy_ids[:, :-1]
+                greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                greedy_logits = self(
+                    input_ids=greedy_input_ids,
+                    attention_mask=greedy_attention_mask,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens
+                ).logits
+                log_probs = F.log_softmax(greedy_logits, dim=-1)
 
-            gen_tokens = greedy_ids[:, prompt_len:]
-            gen_logits = log_probs[:, prompt_len-1:, :]
-            seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
-            seq_log_prob = seq_log_probs.sum(dim=1)
+                gen_tokens = greedy_ids[:, prompt_len:]
+                gen_logits = log_probs[:, prompt_len-1:, :]
+                seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+                seq_log_prob = seq_log_probs.sum(dim=1)
+                greedy_reward = eval(self.reward)
 
-            # ---- Greedy-imitation loss ----
-            reward = eval(self.reward)
+            # ---- Log probs of sampled tokens ----
+            n_samples = 1
+            mean_reward = 0.
+            std_reward = 0.
+            if n_samples > 0:
+                # with torch.no_grad():
+                    for i in range(n_samples):
+                        sampled_ids = self.generate(
+                            input_ids[:, :prompt_len],
+                            attention_mask=attention_mask[:, :prompt_len],
+                            structure_values=structure_ids,
+                            num_structure_tokens=num_structure_tokens,
+                            max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
+                            pad_token_id=self.tokenizer.eos_token_id
+                        )
+                        em, es, cum_prec, wji = self.similarity_measure(sampled_ids[0, prompt_len:], labels[labels != -100])
+
+                        sampled_input_ids = sampled_ids[:, :-1]
+                        sampled_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                        sampled_logits = self(
+                            input_ids=sampled_input_ids,
+                            attention_mask=sampled_attention_mask,
+                            structure_values=structure_ids,
+                            num_structure_tokens=num_structure_tokens
+                        ).logits
+                        log_probs = F.log_softmax(sampled_logits, dim=-1)
+
+                        sampled_tokens = sampled_ids[:, prompt_len:]
+                        gen_logits = log_probs[:, prompt_len-1:, :]
+                        seq_log_probs = gen_logits.gather(2, sampled_tokens.unsqueeze(-1)).squeeze(-1)
+                        seq_log_prob = seq_log_probs.sum(dim=1)
+
+                        mean_reward += eval(self.reward)
+                        std_reward += eval(self.reward) ** 2
+                        # print('mean_reward:', mean_reward)
+                        # print('std_reward:', mean_reward)
+
+                    std_reward -= mean_reward ** 2 / n_samples
+                    std_reward = math.sqrt(std_reward / n_samples)
+                    mean_reward /= n_samples
+
+                    # reward = (reward - mean_reward) / std_reward
+                    reward = mean_reward - greedy_reward 
+
             scst_loss = -(reward * seq_log_prob).mean()
+            
 
             loss += self.alpha_scst * scst_loss
 
