@@ -456,7 +456,7 @@ if __name__ == "__main__":
 
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
-    if len(code_tokenizer) > text_config.vocab_size:
+    if len(code_tokenizer) > text_config.vocab_size and args.data_prefix not in ['default', 'default_cfc']:
         print(f'Resizing model embeddings to a new vocab size of {text_config.vocab_size + 1}')
         text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
     configuration = LlavaCodeConfig(structure_config, text_config,
