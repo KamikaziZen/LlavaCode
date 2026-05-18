@@ -154,7 +154,7 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         #     self.structure_model = JinaEncoder(
         #         model=AutoModel.from_pretrained(self.config.structure_config.model_id, trust_remote_code=True), config=self.config.structure_config)
         else:
-            raise ValueError(f'Unrecognized structure model: {self.structure_model}')
+            raise ValueError(f'Unrecognized structure model: {self.config.structure_config.model_id}')
 
         if self.config.projector == '3L':
             self.multi_modal_projector = LlavaCodeMultiModalProjector3L(config)
