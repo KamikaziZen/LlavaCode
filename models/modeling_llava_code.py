@@ -658,31 +658,32 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 pad_token_id=self.tokenizer.eos_token_id
             )
             em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
+            greedy_reward = eval(self.reward)
 
-            # ---- Log probs of greedy tokens ----
-            with torch.no_grad():
-                greedy_input_ids = greedy_ids[:, :-1]
-                greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
-                greedy_logits = self(
-                    input_ids=greedy_input_ids,
-                    attention_mask=greedy_attention_mask,
-                    structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens
-                ).logits
-                log_probs = F.log_softmax(greedy_logits, dim=-1)
-
-                gen_tokens = greedy_ids[:, prompt_len:]
-                gen_logits = log_probs[:, prompt_len-1:, :]
-                seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
-                seq_log_prob = seq_log_probs.sum(dim=1)
-                greedy_reward = eval(self.reward)
+            # ---- Log probs of greedy tokens (unused: seq_log_prob is overwritten by the sampled loop
+            #      and `greedy_reward` only depends on em/es/cum_prec/wji) ----
+            # with torch.no_grad():
+            #     greedy_input_ids = greedy_ids[:, :-1]
+            #     greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+            #     greedy_logits = self(
+            #         input_ids=greedy_input_ids,
+            #         attention_mask=greedy_attention_mask,
+            #         structure_values=structure_ids,
+            #         num_structure_tokens=num_structure_tokens
+            #     ).logits
+            #     log_probs = F.log_softmax(greedy_logits, dim=-1)
+            #
+            #     gen_tokens = greedy_ids[:, prompt_len:]
+            #     gen_logits = log_probs[:, prompt_len-1:, :]
+            #     seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+            #     seq_log_prob = seq_log_probs.sum(dim=1)
 
             # ---- Log probs of sampled tokens ----
             n_samples = 1
             mean_reward = 0.
             std_reward = 0.
             if n_samples > 0:
-                # with torch.no_grad():
+                # with torch.no_grad():  # gradient needs to flow through a sampled tragectory
                     for i in range(n_samples):
                         sampled_ids = self.generate(
                             input_ids[:, :prompt_len],
@@ -695,7 +696,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                         em, es, cum_prec, wji = self.similarity_measure(sampled_ids[0, prompt_len:], labels[labels != -100])
 
                         sampled_input_ids = sampled_ids[:, :-1]
-                        sampled_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                        sampled_attention_mask = (sampled_input_ids != self.tokenizer.eos_token_id).long()
                         sampled_logits = self(
                             input_ids=sampled_input_ids,
                             attention_mask=sampled_attention_mask,
