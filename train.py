@@ -91,7 +91,7 @@ if __name__ == "__main__":
         # model.multi_modal_projector.load_state_dict(projector_state_dict)
 
         projector_state_dict = model.multi_modal_projector.state_dict()
-        save_name = f"{args.model_checkpoint.split('/')[-1].rstrip('.ckpt')}_projector.pth"
+        save_name = f"{os.path.basename(args.model_checkpoint).removesuffix('.ckpt')}_projector.pth"
         save_dir = os.path.dirname(args.model_checkpoint)
         torch.save(projector_state_dict, os.path.join(save_dir, save_name))
         import sys
