@@ -54,11 +54,14 @@ if __name__ == "__main__":
 
     print('args:', args)
 
+    uses_structure = args.data_prefix not in ('default', 'default_cfc')
+
     code_tokenizer = AutoTokenizer.from_pretrained(args.text_model_id, use_fast=False)
-    code_tokenizer.add_tokens([STRUCTURE_TOKEN])
+    if uses_structure:
+        code_tokenizer.add_tokens([STRUCTURE_TOKEN])
     if code_tokenizer.pad_token_id is None:
         code_tokenizer.pad_token_id = code_tokenizer.eos_token_id
-    structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
+    structure_token_id = code_tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN) if uses_structure else None
 
     structure_tokenizer = AutoTokenizer.from_pretrained(args.structure_model_id, use_fast=False)
 
@@ -68,9 +71,9 @@ if __name__ == "__main__":
 
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
-    if len(code_tokenizer) > text_config.vocab_size:
-        print(f'Resizing model embeddings to a new vocab size of {text_config.vocab_size + 1}')
-        text_config.vocab_size = text_config.vocab_size + 1  # for a new <CODE_STRUCTURE>
+    if uses_structure:
+        text_config.vocab_size = len(code_tokenizer)
+        print(f'Resizing model embeddings to a new vocab size of {text_config.vocab_size}')
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,
                                     structure_token_id=structure_token_id,
