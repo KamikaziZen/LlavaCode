@@ -646,84 +646,98 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             loss += self.alpha_kl * kl_loss
 
         if self.alpha_scst is not None and self.alpha_scst > .0:
-            assert input_ids.shape[0] == 1, 'Change the logic below'
-            prompt_len = input_ids[labels == -100].shape[0] + 1
-            # ===== Baseline: greedy decode =====
+            fim_middle_id = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)[2]
+            eos_id = self.tokenizer.eos_token_id
+            pad_id = self.tokenizer.pad_token_id
+            batch_size = input_ids.shape[0]
+            n_samples = 1
+
+            # Per-sample prompt length = position of <|fim_middle|> + 1
+            fim_mask = (input_ids == fim_middle_id)
+            assert fim_mask.any(dim=1).all(), 'fim_middle token not found in some samples'
+            fim_pos = fim_mask.int().argmax(dim=1)                # (B,)
+            prompt_lens = (fim_pos + 1).long()                    # (B,)
+            max_prompt_len = int(prompt_lens.max().item())
+
+            # Re-pad all prompts to max_prompt_len, LEFT-padded so they end aligned at <|fim_middle|>
+            prompt_ids = torch.full(
+                (batch_size, max_prompt_len), pad_id,
+                dtype=input_ids.dtype, device=input_ids.device)
+            prompt_mask = torch.zeros(
+                (batch_size, max_prompt_len),
+                dtype=attention_mask.dtype, device=attention_mask.device)
+            for b in range(batch_size):
+                p = int(prompt_lens[b].item())
+                prompt_ids[b, -p:] = input_ids[b, :p]
+                prompt_mask[b, -p:] = attention_mask[b, :p]
+
+            gold_per_sample = [labels[b][labels[b] != -100] for b in range(batch_size)]
+
+            def batch_rewards(generated_ids, strip=False):
+                rewards, ems, ess, cps, wjis = [], [], [], [], []
+                for b in range(batch_size):
+                    em, es, cum_prec, wji = self.similarity_measure(
+                        generated_ids[b, max_prompt_len:], gold_per_sample[b], strip=strip)
+                    rewards.append(eval(self.reward))
+                    ems.append(float(em)); ess.append(float(es))
+                    cps.append(float(cum_prec)); wjis.append(float(wji))
+                return (
+                    torch.tensor(rewards, dtype=torch.float, device=input_ids.device),
+                    ems, ess, cps, wjis,
+                )
+
+            # ===== Baseline: greedy decode (batched) =====
             greedy_ids = self.generate(
-                input_ids[:, :prompt_len],
-                attention_mask=attention_mask[:, :prompt_len],
+                prompt_ids,
+                attention_mask=prompt_mask,
                 structure_values=structure_ids,
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=False,
-                pad_token_id=self.tokenizer.eos_token_id
+                pad_token_id=eos_id,
             )
-            em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100])
-            greedy_reward = eval(self.reward)
+            greedy_rewards, em_list, es_list, cp_list, wji_list = batch_rewards(greedy_ids)
 
-            # ---- Log probs of greedy tokens (unused: seq_log_prob is overwritten by the sampled loop
-            #      and `greedy_reward` only depends on em/es/cum_prec/wji) ----
-            # with torch.no_grad():
-            #     greedy_input_ids = greedy_ids[:, :-1]
-            #     greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
-            #     greedy_logits = self(
-            #         input_ids=greedy_input_ids,
-            #         attention_mask=greedy_attention_mask,
-            #         structure_values=structure_ids,
-            #         num_structure_tokens=num_structure_tokens
-            #     ).logits
-            #     log_probs = F.log_softmax(greedy_logits, dim=-1)
-            #
-            #     gen_tokens = greedy_ids[:, prompt_len:]
-            #     gen_logits = log_probs[:, prompt_len-1:, :]
-            #     seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
-            #     seq_log_prob = seq_log_probs.sum(dim=1)
+            # ===== Sampled rollouts (batched) =====
+            scst_loss = torch.tensor(0.0, device=input_ids.device)
+            for _ in range(n_samples):
+                sampled_ids = self.generate(
+                    prompt_ids,
+                    attention_mask=prompt_mask,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens,
+                    max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
+                    pad_token_id=eos_id,
+                )
+                sampled_rewards, em_list, es_list, cp_list, wji_list = batch_rewards(sampled_ids)
 
-            # ---- Log probs of sampled tokens ----
-            n_samples = 1
-            mean_reward = 0.
-            std_reward = 0.
-            if n_samples > 0:
-                # with torch.no_grad():  # gradient needs to flow through a sampled tragectory
-                    for i in range(n_samples):
-                        sampled_ids = self.generate(
-                            input_ids[:, :prompt_len],
-                            attention_mask=attention_mask[:, :prompt_len],
-                            structure_values=structure_ids,
-                            num_structure_tokens=num_structure_tokens,
-                            max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
-                            pad_token_id=self.tokenizer.eos_token_id
-                        )
-                        em, es, cum_prec, wji = self.similarity_measure(sampled_ids[0, prompt_len:], labels[labels != -100])
+                # Build correct attention mask: prompt content + valid generated tokens
+                gen_tokens = sampled_ids[:, max_prompt_len:]
+                eos_in_gen = (gen_tokens == eos_id)
+                seen_eos = eos_in_gen.cumsum(dim=1) > 0
+                gen_valid = (~seen_eos) | eos_in_gen           # 1 up to and including first EOS
+                sampled_input_ids = sampled_ids[:, :-1]
+                sampled_attention = torch.cat(
+                    [prompt_mask, gen_valid[:, :-1].to(prompt_mask.dtype)], dim=1)
 
-                        sampled_input_ids = sampled_ids[:, :-1]
-                        sampled_attention_mask = (sampled_input_ids != self.tokenizer.eos_token_id).long()
-                        sampled_logits = self(
-                            input_ids=sampled_input_ids,
-                            attention_mask=sampled_attention_mask,
-                            structure_values=structure_ids,
-                            num_structure_tokens=num_structure_tokens
-                        ).logits
-                        log_probs = F.log_softmax(sampled_logits, dim=-1)
+                sampled_logits = self(
+                    input_ids=sampled_input_ids,
+                    attention_mask=sampled_attention,
+                    structure_values=structure_ids,
+                    num_structure_tokens=num_structure_tokens,
+                ).logits
+                log_probs = F.log_softmax(sampled_logits, dim=-1)
+                gen_logits = log_probs[:, max_prompt_len-1:, :]
+                seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
+                seq_log_prob = (seq_log_probs * gen_valid.float()).sum(dim=1)
 
-                        sampled_tokens = sampled_ids[:, prompt_len:]
-                        gen_logits = log_probs[:, prompt_len-1:, :]
-                        seq_log_probs = gen_logits.gather(2, sampled_tokens.unsqueeze(-1)).squeeze(-1)
-                        seq_log_prob = seq_log_probs.sum(dim=1)
+                advantage = sampled_rewards - greedy_rewards
+                scst_loss = scst_loss - (advantage * seq_log_prob).mean()
+            scst_loss = scst_loss / max(n_samples, 1)
 
-                        mean_reward += eval(self.reward)
-                        std_reward += eval(self.reward) ** 2
-                        # print('mean_reward:', mean_reward)
-                        # print('std_reward:', mean_reward)
-
-                    std_reward -= mean_reward ** 2 / n_samples
-                    std_reward = math.sqrt(std_reward / n_samples)
-                    mean_reward /= n_samples
-
-                    # reward = (reward - mean_reward) / std_reward
-                    reward = mean_reward - greedy_reward 
-
-            scst_loss = -(reward * seq_log_prob).mean()
-            
+            em = torch.tensor(em_list, device=input_ids.device).mean()
+            es = torch.tensor(es_list, device=input_ids.device).mean()
+            cum_prec = torch.tensor(cp_list, device=input_ids.device).mean()
+            wji = torch.tensor(wji_list, device=input_ids.device).mean()
 
             loss += self.alpha_scst * scst_loss
 
@@ -925,38 +939,78 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 loss += self.alpha_kl * kl_loss
 
             if self.alpha_scst is not None and self.alpha_scst > .0:
-                assert input_ids.shape[0] == 1, 'Change the logic below'
-                prompt_len = input_ids[labels == -100].shape[0] + 1
-                # ===== Baseline: greedy decode =====
+                fim_middle_id = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)[2]
+                eos_id = self.tokenizer.eos_token_id
+                pad_id = self.tokenizer.pad_token_id
+                batch_size = input_ids.shape[0]
+
+                # Per-sample prompt length
+                fim_mask = (input_ids == fim_middle_id)
+                assert fim_mask.any(dim=1).all(), 'fim_middle token not found in some samples'
+                fim_pos = fim_mask.int().argmax(dim=1)
+                prompt_lens = (fim_pos + 1).long()
+                max_prompt_len = int(prompt_lens.max().item())
+
+                # Re-pad prompts to max_prompt_len, LEFT-padded (aligned at fim_middle)
+                prompt_ids = torch.full(
+                    (batch_size, max_prompt_len), pad_id,
+                    dtype=input_ids.dtype, device=input_ids.device)
+                prompt_mask = torch.zeros(
+                    (batch_size, max_prompt_len),
+                    dtype=attention_mask.dtype, device=attention_mask.device)
+                for b in range(batch_size):
+                    p = int(prompt_lens[b].item())
+                    prompt_ids[b, -p:] = input_ids[b, :p]
+                    prompt_mask[b, -p:] = attention_mask[b, :p]
+
+                gold_per_sample = [labels[b][labels[b] != -100] for b in range(batch_size)]
+
+                # ===== Greedy decode (batched) =====
                 greedy_ids = self.generate(
-                    input_ids[:, :prompt_len],
-                    attention_mask=attention_mask[:, :prompt_len],
+                    prompt_ids,
+                    attention_mask=prompt_mask,
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
-                    # pad_token_id=self.tokenizer.eos_token_id
+                    # pad_token_id=eos_id
                 )
-                em, es, cum_prec, wji = self.similarity_measure(greedy_ids[0, prompt_len:], labels[labels != -100], strip=True)
 
-                # ---- Log probs of greedy tokens ----
+                # Per-sample metrics + reward
+                rewards, em_list, es_list, cp_list, wji_list = [], [], [], [], []
+                for b in range(batch_size):
+                    em, es, cum_prec, wji = self.similarity_measure(
+                        greedy_ids[b, max_prompt_len:], gold_per_sample[b], strip=True)
+                    rewards.append(eval(self.reward))
+                    em_list.append(float(em)); es_list.append(float(es))
+                    cp_list.append(float(cum_prec)); wji_list.append(float(wji))
+                rewards_t = torch.tensor(rewards, dtype=torch.float, device=input_ids.device)
+
+                # ---- Log probs of greedy tokens (batched) ----
+                gen_tokens = greedy_ids[:, max_prompt_len:]
+                eos_in_gen = (gen_tokens == eos_id)
+                seen_eos = eos_in_gen.cumsum(dim=1) > 0
+                gen_valid = (~seen_eos) | eos_in_gen
                 greedy_input_ids = greedy_ids[:, :-1]
-                greedy_attention_mask = (greedy_input_ids != self.tokenizer.eos_token_id).long()
+                greedy_attention = torch.cat(
+                    [prompt_mask, gen_valid[:, :-1].to(prompt_mask.dtype)], dim=1)
                 greedy_logits = self(
                     input_ids=greedy_input_ids,
-                    attention_mask=greedy_attention_mask,
+                    attention_mask=greedy_attention,
                     structure_values=structure_ids,
-                    num_structure_tokens=num_structure_tokens
+                    num_structure_tokens=num_structure_tokens,
                 ).logits
                 log_probs = F.log_softmax(greedy_logits, dim=-1)
-
-                gen_tokens = greedy_ids[:, prompt_len:]
-                gen_logits = log_probs[:, prompt_len-1:, :]
+                gen_logits = log_probs[:, max_prompt_len-1:, :]
                 seq_log_probs = gen_logits.gather(2, gen_tokens.unsqueeze(-1)).squeeze(-1)
-                seq_log_prob = seq_log_probs.sum(dim=1)
+                seq_log_prob = (seq_log_probs * gen_valid.float()).sum(dim=1)
 
                 # ---- Greedy-imitation loss ----
-                reward = eval(self.reward)
-                scst_loss = -(reward * seq_log_prob).mean()
+                scst_loss = -(rewards_t * seq_log_prob).mean()
+
+                em = torch.tensor(em_list, device=input_ids.device).mean()
+                es = torch.tensor(es_list, device=input_ids.device).mean()
+                cum_prec = torch.tensor(cp_list, device=input_ids.device).mean()
+                wji = torch.tensor(wji_list, device=input_ids.device).mean()
 
                 loss += self.alpha_scst * scst_loss
 
