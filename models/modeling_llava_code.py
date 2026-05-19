@@ -9,7 +9,7 @@ from transformers import (
     GenerationMixin,
 )
 
-from transformers.utils import can_return_tuple, LossKwargs
+from transformers.utils import can_return_tuple, LossKwargs, is_flash_attn_2_available
 from transformers.processing_utils import Unpack
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from transformers.trainer_pt_utils import get_parameter_names
@@ -58,7 +58,7 @@ class LlavaCodePreTrainedModel(PreTrainedModel):
     _no_split_modules = ["LlamaDecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_cache_class = True
-    _supports_flash_attn_2 = False
+    _supports_flash_attn_2 = True
     _supports_sdpa = True
     _supports_quantized_cache = True
     _supports_static_cache = True
@@ -123,6 +123,8 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
     def __init__(self, config: LlavaCodeConfig, model_path=None):
         super().__init__(config)
 
+        attn_impl = 'flash_attention_2' if is_flash_attn_2_available() else 'sdpa'
+
         if model_path:
             state_dict = torch.load(model_path, map_location="cuda")["state_dict"]
             state_dict = {
@@ -133,10 +135,13 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
             encoder = AutoModel.from_config(
                 AutoConfig.from_pretrained(self.config.structure_config.model_id))
             self.language_model = AutoModelForCausalLM.from_config(
-                AutoConfig.from_pretrained(self.config.text_config.model_id))
+                AutoConfig.from_pretrained(self.config.text_config.model_id),
+                attn_implementation=attn_impl)
         else:
             encoder = AutoModel.from_pretrained(self.config.structure_config.model_id)
-            self.language_model = AutoModelForCausalLM.from_pretrained(self.config.text_config.model_id)
+            self.language_model = AutoModelForCausalLM.from_pretrained(
+                self.config.text_config.model_id,
+                attn_implementation=attn_impl)
 
         if 'unixcoder' in self.config.structure_config.model_id.lower():
             self.structure_model = UniXcoderEncoder(
