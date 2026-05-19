@@ -1093,22 +1093,19 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
 
     def on_after_backward(self):
         with torch.no_grad():
-            # Compute gradient norm (L2 norm)
-            total_norm = 0.0
+            grad_total_sq = 0.0
             for p in self.parameters():
                 if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
+                    grad_total_sq += p.grad.data.norm(2).item() ** 2
+            self.log('grad_norm', grad_total_sq ** 0.5,
+                     on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
 
-            # Log gradient norm
-            self.log('grad_norm', total_norm, on_step=True, on_epoch=False, prog_bar=True)
-
-            total_norm = 0.0
+            weight_total_sq = 0.0
             for p in self.parameters():
                 if p.grad is not None:
-                    total_norm += p.data.norm(2).item() ** 2
-            self.log('weight_norm', total_norm ** 0.5, on_step=True)
+                    weight_total_sq += p.data.norm(2).item() ** 2
+            self.log('weight_norm', weight_total_sq ** 0.5,
+                     on_step=True, sync_dist=True)
 
     def configure_optimizers(self):
         decay_parameters = get_parameter_names(self.model, [torch.nn.LayerNorm])
