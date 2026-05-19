@@ -181,7 +181,7 @@ if __name__ == "__main__":
         'gradient_clip_val': args.gradient_clip_val,
         'gradient_clip_algorithm': 'norm',
         'default_root_dir': args.default_root_dir,
-        # 'limit_val_batches': 0.0
+        'limit_val_batches': args.limit_val_batches,
     }
 
     trainer = pl.Trainer(**custom_trainer_kwargs)
