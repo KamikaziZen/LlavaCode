@@ -286,11 +286,14 @@ class LlavaCodeModel(LlavaCodePreTrainedModel):
         if structure_values is not None and structure_features is None and not using_cache:
             structure_features, structure_embeddings = self.get_structure_features_and_embeddings(
                 structure_values, num_structure_tokens, structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
-            structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
         else:
             structure_embeddings = None
 
-        if structure_features is not None:
+        # Scatter only at prefill — during decode (using_cache=True) the new tokens never
+        # contain <CODE_STRUCTURE>, so the mask would be empty and the assert would fire
+        # when structure_features was supplied via cache.
+        if structure_features is not None and not using_cache:
+            structure_features = structure_features.to(inputs_embeds.device, inputs_embeds.dtype)
             special_structure_mask = (input_ids == self.config.structure_token_id).unsqueeze(-1)
             special_structure_mask = special_structure_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
             assert inputs_embeds[special_structure_mask].numel() == structure_features.numel(), \
@@ -603,12 +606,17 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         loss = torch.tensor(0.0, device=input_ids.device)
 
         assert structure_attn_mask is None and structure_pos_idx is None
+
+        # Cache encoder + projector outputs once per step; reused by CE/KL forward,
+        # SCST greedy/sampled generate(), and the SCST log-prob forward.
+        struct_feats, struct_emb = self.model.get_structure_features_and_embeddings(
+            structure_ids, num_structure_tokens,
+            structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
+
         outputs = self(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            structure_values=structure_ids,
-            structure_attn_mask=structure_attn_mask,
-            structure_pos_idx=structure_pos_idx,
+            structure_features=struct_feats,
             num_structure_tokens=num_structure_tokens)
         logits = outputs.logits
         ce_loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
@@ -616,11 +624,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         loss += self.alpha_ce * ce_loss
 
         if self.alpha_align is not None and self.alpha_align > .0:
-            projections = outputs.structure_features
-            embeddings = outputs.structure_embeddings
-
-            proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
-            embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
+            proj_sim = F.cosine_similarity(struct_feats.unsqueeze(1), struct_feats.unsqueeze(0), dim=-1)
+            embed_sim = F.cosine_similarity(struct_emb.unsqueeze(1), struct_emb.unsqueeze(0), dim=-1)
 
             align_loss = F.mse_loss(proj_sim, embed_sim)
 
@@ -692,10 +697,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 )
 
             # ===== Baseline: greedy decode (batched) =====
+            # detach() severs the projector graph: generate() runs on frozen LM
+            # with non-grad inputs, so no activations are held for backprop.
             greedy_ids = self.generate(
                 prompt_ids,
                 attention_mask=prompt_mask,
-                structure_values=structure_ids,
+                structure_features=struct_feats.detach(),
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=False,
                 pad_token_id=pad_id,
@@ -708,7 +715,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 sampled_ids = self.generate(
                     prompt_ids,
                     attention_mask=prompt_mask,
-                    structure_values=structure_ids,
+                    structure_features=struct_feats.detach(),
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
                     pad_token_id=pad_id,
@@ -731,7 +738,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 sampled_logits = self(
                     input_ids=sampled_input_ids,
                     attention_mask=sampled_attention,
-                    structure_values=structure_ids,
+                    structure_features=struct_feats,
                     num_structure_tokens=num_structure_tokens,
                 ).logits
                 log_probs = F.log_softmax(sampled_logits, dim=-1)
@@ -903,12 +910,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             wji = torch.tensor(0.0, device=input_ids.device)
             loss = torch.tensor(0.0, device=input_ids.device)
 
+            # Cache encoder + projector outputs once per validation step.
+            struct_feats, struct_emb = self.model.get_structure_features_and_embeddings(
+                structure_ids, num_structure_tokens,
+                structure_attn_mask=structure_attn_mask, structure_pos_idx=structure_pos_idx)
+
             outputs = self(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                structure_values=structure_ids,
-                structure_attn_mask=structure_attn_mask,
-                structure_pos_idx=structure_pos_idx,
+                structure_features=struct_feats,
                 num_structure_tokens=num_structure_tokens
             )
             logits = outputs.logits
@@ -917,12 +927,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             loss += self.alpha_ce * ce_loss
 
             if self.alpha_align is not None and self.alpha_align > 0.0:
-
-                projections = outputs.structure_features
-                embeddings = outputs.structure_embeddings
-
-                proj_sim = F.cosine_similarity(projections.unsqueeze(1), projections.unsqueeze(0), dim=-1)
-                embed_sim = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
+                proj_sim = F.cosine_similarity(struct_feats.unsqueeze(1), struct_feats.unsqueeze(0), dim=-1)
+                embed_sim = F.cosine_similarity(struct_emb.unsqueeze(1), struct_emb.unsqueeze(0), dim=-1)
                 align_loss = F.mse_loss(proj_sim, embed_sim)
 
                 # proj_var = projections.var(dim=0).mean()
@@ -978,7 +984,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 greedy_ids = self.generate(
                     prompt_ids,
                     attention_mask=prompt_mask,
-                    structure_values=structure_ids,
+                    structure_features=struct_feats,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
                     pad_token_id=pad_id,
@@ -1007,7 +1013,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 greedy_logits = self(
                     input_ids=greedy_input_ids,
                     attention_mask=greedy_attention,
-                    structure_values=structure_ids,
+                    structure_features=struct_feats,
                     num_structure_tokens=num_structure_tokens,
                 ).logits
                 log_probs = F.log_softmax(greedy_logits, dim=-1)
