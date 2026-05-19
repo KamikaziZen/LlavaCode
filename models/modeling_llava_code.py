@@ -693,7 +693,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_values=structure_ids,
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=False,
-                pad_token_id=eos_id,
+                pad_token_id=pad_id,
             )
             greedy_rewards, em_list, es_list, cp_list, wji_list = batch_rewards(greedy_ids)
 
@@ -706,15 +706,19 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
-                    pad_token_id=eos_id,
+                    pad_token_id=pad_id,
                 )
                 sampled_rewards, em_list, es_list, cp_list, wji_list = batch_rewards(sampled_ids)
 
-                # Build correct attention mask: prompt content + valid generated tokens
+                # Build correct attention mask: prompt content + valid generated tokens.
+                # gen_valid is True up to and including the first EOS, False after.
+                # Correct even when pad_token_id == eos_token_id (e.g. StarCoder):
+                # eos_in_gen is True at every post-EOS pad-fill position too, so the
+                # `(~seen_eos) | eos_in_gen` formulation would over-include them.
                 gen_tokens = sampled_ids[:, max_prompt_len:]
                 eos_in_gen = (gen_tokens == eos_id)
-                seen_eos = eos_in_gen.cumsum(dim=1) > 0
-                gen_valid = (~seen_eos) | eos_in_gen           # 1 up to and including first EOS
+                cum_eos = eos_in_gen.cumsum(dim=1)
+                gen_valid = (cum_eos == 0) | ((cum_eos == 1) & eos_in_gen)
                 sampled_input_ids = sampled_ids[:, :-1]
                 sampled_attention = torch.cat(
                     [prompt_mask, gen_valid[:, :-1].to(prompt_mask.dtype)], dim=1)
@@ -972,7 +976,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
-                    # pad_token_id=eos_id
+                    pad_token_id=pad_id,
                 )
 
                 # Per-sample metrics + reward
@@ -986,10 +990,12 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 rewards_t = torch.tensor(rewards, dtype=torch.float, device=input_ids.device)
 
                 # ---- Log probs of greedy tokens (batched) ----
+                # gen_valid is True up to and including the first EOS, False after.
+                # Works for pad==eos (StarCoder) and pad!=eos (Qwen).
                 gen_tokens = greedy_ids[:, max_prompt_len:]
                 eos_in_gen = (gen_tokens == eos_id)
-                seen_eos = eos_in_gen.cumsum(dim=1) > 0
-                gen_valid = (~seen_eos) | eos_in_gen
+                cum_eos = eos_in_gen.cumsum(dim=1)
+                gen_valid = (cum_eos == 0) | ((cum_eos == 1) & eos_in_gen)
                 greedy_input_ids = greedy_ids[:, :-1]
                 greedy_attention = torch.cat(
                     [prompt_mask, gen_valid[:, :-1].to(prompt_mask.dtype)], dim=1)
@@ -1094,16 +1100,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     def on_after_backward(self):
         with torch.no_grad():
             grad_total_sq = 0.0
+            weight_total_sq = 0.0
             for p in self.parameters():
+                if not p.requires_grad:
+                    continue
+                weight_total_sq += p.data.norm(2).item() ** 2
                 if p.grad is not None:
                     grad_total_sq += p.grad.data.norm(2).item() ** 2
             self.log('grad_norm', grad_total_sq ** 0.5,
                      on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
-
-            weight_total_sq = 0.0
-            for p in self.parameters():
-                if p.grad is not None:
-                    weight_total_sq += p.data.norm(2).item() ** 2
             self.log('weight_norm', weight_total_sq ** 0.5,
                      on_step=True, sync_dist=True)
 
