@@ -175,8 +175,8 @@ class LlavaCodeDataModule(LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(
-            self.train_data, batch_size=self.train_batch_size, collate_fn=self.data_collator, num_workers=8, shuffle=True)
+            self.train_data, batch_size=self.train_batch_size, collate_fn=self.data_collator, num_workers=self.num_workers, shuffle=True)
 
     def val_dataloader(self):
         return DataLoader(
-            self.valid_data, batch_size=self.valid_batch_size, collate_fn=self.data_collator, num_workers=8, shuffle=False)
+            self.valid_data, batch_size=self.valid_batch_size, collate_fn=self.data_collator, num_workers=self.num_workers, shuffle=False)
