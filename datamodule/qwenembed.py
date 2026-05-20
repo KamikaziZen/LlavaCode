@@ -20,7 +20,7 @@ class Qwen3Dataset(Dataset):
                  fim_tokens_ids,
                  num_structure_tokens,
                  num_truth_lines=10,
-                 max_seq_length=2048,
+                 max_seq_length=2100,
                  max_structure_length=512,
                  lc_rc_ratio=2.0):
         super(Qwen3Dataset, self).__init__()
@@ -34,6 +34,7 @@ class Qwen3Dataset(Dataset):
         self.data = data.select(keep_indices)
         print('Dataset samples: ', len(self.data))
         self.max_seq_length = max_seq_length
+        self.max_target_length = 100
         self.code_tokenizer = code_tokenizer
         self.structure_tokenizer = structure_tokenizer
         self.num_structure_tokens = num_structure_tokens
@@ -84,10 +85,10 @@ class Qwen3Dataset(Dataset):
             self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
             right_context_ids = self.code_tokenizer(content['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             groundtruth = "\n".join(content['groundtruth'].split("\n")[:self.num_truth_lines])
-            target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_target_length).input_ids[0]
 
             # tgt_len = len(target_ids)
-            lr_budget = self.max_seq_length - 50 - self.num_structure_tokens - 3  # 3 tokens for FIM, 50 for line completion
+            lr_budget = self.max_seq_length - self.max_target_length - self.num_structure_tokens - 3  # 3 tokens for FIM + target budget
             rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
             lc_budget = int(rc_budget * self.lc_rc_ratio)
 

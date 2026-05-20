@@ -89,12 +89,13 @@ class DfgDataset(Dataset):
                  code_tokenizer,
                  structure_token_id,
                  num_structure_tokens=None,
-                 max_seq_length=2048,
+                 max_seq_length=2100,
                  max_structure_length=512,
                  lc_rc_ratio=2.0):
         super(DfgDataset, self).__init__()
         self.data = data
         self.max_seq_length = max_seq_length
+        self.max_target_length = 100
         self.code_tokenizer = code_tokenizer
         self.dfg_tokenizer = dfg_tokenizer
         self.structure_token_id = structure_token_id
@@ -114,7 +115,7 @@ class DfgDataset(Dataset):
 
         left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt').input_ids[0]
         right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt').input_ids[0]
-        target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt').input_ids[0]
+        target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt', truncation=True, max_length=self.max_target_length).input_ids[0]
 
         tgt_len = len(target_ids)
         if not self.num_structure_tokens:

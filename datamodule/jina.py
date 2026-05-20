@@ -18,7 +18,7 @@ class JinaDataset(Dataset):
                  structure_token_id,
                  fim_tokens_ids,
                  num_structure_tokens,
-                 max_seq_length=2048,
+                 max_seq_length=2100,
                  max_structure_length=512,
                  lc_rc_ratio=2.0):
         super(JinaDataset, self).__init__()
@@ -29,6 +29,7 @@ class JinaDataset(Dataset):
         self.data = data.select(keep_indices)
         print('Dataset samples: ', len(self.data))
         self.max_seq_length = max_seq_length
+        self.max_target_length = 100
         self.code_tokenizer = code_tokenizer
         self.structure_tokenizer = structure_tokenizer
         self.num_structure_tokens = num_structure_tokens
@@ -90,7 +91,7 @@ class JinaDataset(Dataset):
             # preliminary truncating to save memory and avoid warnings
             left_context_ids = self.code_tokenizer(self.data[ind]['content']['prompt'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             right_context_ids = self.code_tokenizer(self.data[ind]['content']['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
-            target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            target_ids = self.code_tokenizer(self.data[ind]['content']['groundtruth'], return_tensors='pt', truncation=True, max_length=self.max_target_length).input_ids[0]
 
             tgt_len = len(target_ids)
             lr_budget = self.max_seq_length - tgt_len - self.num_structure_tokens - 3  # 3 tokens for FIM

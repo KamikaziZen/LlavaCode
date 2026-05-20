@@ -24,7 +24,7 @@ class CodeCfcDataset(Dataset):
                  structure_token_id,
                  fim_tokens_ids,
                  num_structure_tokens=None,
-                 max_seq_length=2048,
+                 max_seq_length=2100,
                  max_structure_length=512,
                  lc_rc_ratio=2.0):
         super(CodeCfcDataset, self).__init__()
@@ -36,6 +36,7 @@ class CodeCfcDataset(Dataset):
         self.data = data.select(keep_indices)
         print('Dataset samples: ', len(self.data))
         self.max_seq_length = max_seq_length
+        self.max_target_length = 100
         self.code_tokenizer = code_tokenizer
         self.ast_tokenizer = ast_tokenizer
         self.structure_token_id = structure_token_id
@@ -89,9 +90,9 @@ class CodeCfcDataset(Dataset):
             self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
             right_context_ids = self.code_tokenizer(content['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             groundtruth = "\n".join(content['groundtruth'].split("\n")[:self.num_truth_lines])
-            target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_target_length).input_ids[0]
 
-            lr_budget = self.max_seq_length - 50 - self.num_structure_tokens - 3  # 3 tokens for FIM, 50 for line completion
+            lr_budget = self.max_seq_length - self.max_target_length - self.num_structure_tokens - 3  # 3 tokens for FIM + target budget
             rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
             lc_budget = int(rc_budget * self.lc_rc_ratio)
 
@@ -152,7 +153,7 @@ class AstCfcDataset(Dataset):
                  fim_tokens_ids,
                  num_truth_lines=10,
                  num_structure_tokens=None,
-                 max_seq_length=2048,
+                 max_seq_length=2100,
                  max_structure_length=512,
                  lc_rc_ratio=2.0):
         super(AstCfcDataset, self).__init__()
@@ -166,6 +167,7 @@ class AstCfcDataset(Dataset):
         self.data = data.select(keep_indices)
         print('Dataset samples after removal: ', len(self.data))
         self.max_seq_length = max_seq_length
+        self.max_target_length = 100
         self.code_tokenizer = code_tokenizer
         self.ast_tokenizer = ast_tokenizer
         self.structure_token_id = structure_token_id
@@ -208,9 +210,9 @@ class AstCfcDataset(Dataset):
             self.code_tokenizer.truncation_side = 'right'  # right context should be truncated from the right side
             right_context_ids = self.code_tokenizer(content['right_context'], return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
             groundtruth = "\n".join(content['groundtruth'].split("\n")[:self.num_truth_lines])
-            target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_seq_length).input_ids[0]
+            target_ids = self.code_tokenizer(groundtruth, return_tensors='pt', truncation=True, max_length=self.max_target_length).input_ids[0]
 
-            lr_budget = self.max_seq_length - 50 - self.num_structure_tokens - 3  # 3 tokens for FIM, 50 for line completion
+            lr_budget = self.max_seq_length - self.max_target_length - self.num_structure_tokens - 3  # 3 tokens for FIM + target budget
             rc_budget = int(lr_budget / (self.lc_rc_ratio + 1))
             lc_budget = int(rc_budget * self.lc_rc_ratio)
 
