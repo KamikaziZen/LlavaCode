@@ -83,7 +83,7 @@ if __name__ == "__main__":
     if args.model_checkpoint is not None:
         logger.info(f"Loading checkpoint: {args.model_checkpoint}")
         model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
-            args.model_checkpoint, config=configuration)
+            args.model_checkpoint, config=configuration, strict=False)
         # model = LlavaCodeForConditionalGeneration(configuration)
         # ckpt = torch.load(args.model_checkpoint, map_location="cpu")
         # state_dict = ckpt["state_dict"]
@@ -151,7 +151,12 @@ if __name__ == "__main__":
 
     callbacks = []
     callbacks = [LearningRateMonitor(logging_interval='step')]
+    ckpt_dir = args.ckpt_dir
+    if ckpt_dir is not None:
+        run_name = f"{args.text_model_id.split('/')[-1]}_{args.structure_model_id.split('/')[-1]}_{args.exp_name}"
+        ckpt_dir = os.path.join(ckpt_dir, run_name)
     checkpoint_callback = ModelCheckpoint(
+        dirpath=ckpt_dir,
         save_top_k=1,
         monitor="Val_Acc_EM",
         save_last=False,

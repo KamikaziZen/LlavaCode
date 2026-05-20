@@ -9,6 +9,8 @@ def add_program_args():
     parser.add_argument("--train_datadir", type=str, help="path to the processed .arrow dataset")
     parser.add_argument("--valid_datadir", type=str, help="path to the processed .arrow dataset")
     parser.add_argument("--log_dir", type=str, default="./lightning_logs/", help="Path for the pl Tainer loggers and checkpoints")
+    parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints. If unset, defaults to <log_dir>/<exp_name>/checkpoints")
+    parser.add_argument("--save_projector_only", action="store_true", help="Save only the multi_modal_projector weights in the checkpoint (skips the frozen LLM/encoder), yielding tiny .ckpt files")
     parser.add_argument("--num_workers", type=int, default=8, help="Number of data loading workers")
     parser.add_argument("--seed", type=int, default=42, help="value to seed RNG of torch, numpy")
     parser.add_argument("--track_steps", action="store_true", help="if True, progress bar will track training batches, else will track epochs")

@@ -357,6 +357,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
     def set_trainer_args(self, trainer_args):
         self.trainer_args = trainer_args
 
+    def on_save_checkpoint(self, checkpoint):
+        # Only the projector trains, so optionally drop the frozen LLM/encoder
+        # weights from the saved state_dict to keep checkpoints tiny.
+        if getattr(getattr(self, "trainer_args", None), "save_projector_only", False):
+            checkpoint["state_dict"] = {
+                k: v for k, v in checkpoint["state_dict"].items()
+                if k.startswith("model.multi_modal_projector.")
+            }
+
     def setup(self, stage):
         # Loss Configuration
         if self.trainer_args.loss == 'mle':
@@ -576,12 +585,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         seq_len = lbl_tensor.size(1)
         pos_ids = torch.arange(seq_len, device=lbl_tensor.device).unsqueeze(0)  # [1, seq_len]
 
-        # Mask: keep tokens where position > middle_pos
+        # Mask: keep labels strictly after <|fim_middle|>.
+        # Under the collator's left-padding (datamodule.py: padding_side='left')
+        # We deliberately do NOT add `lbl_tensor[lbl_tensor == pad_token_id] = -100`,
+        # because for StarCoder (pad_token_id == eos_token_id via the __init__ fallback)
+        # that mask would also strip the legitimate completion-ending EOS — the model
+        # would never get a CE gradient on the "emit EOS here" step. With this kept, the
+        # final EOS is supervised for both Qwen (pad != eos) and StarCoder (pad == eos).
         keep_mask = pos_ids > middle_pos.unsqueeze(1)
-
-        # Apply mask and pad masking
         lbl_tensor = torch.where(keep_mask, lbl_tensor, torch.full_like(lbl_tensor, -100))
-        lbl_tensor[lbl_tensor == self.pad_token_id] = -100
 
         attention_mask = inp_tensor.ne(self.pad_token_id)
 
@@ -725,8 +737,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 # Build correct attention mask: prompt content + valid generated tokens.
                 # gen_valid is True up to and including the first EOS, False after.
                 # Correct even when pad_token_id == eos_token_id (e.g. StarCoder):
-                # eos_in_gen is True at every post-EOS pad-fill position too, so the
-                # `(~seen_eos) | eos_in_gen` formulation would over-include them.
+                # eos_in_gen is True at every post-EOS pad-fill position
                 gen_tokens = sampled_ids[:, max_prompt_len:]
                 eos_in_gen = (gen_tokens == eos_id)
                 cum_eos = eos_in_gen.cumsum(dim=1)
