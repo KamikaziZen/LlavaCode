@@ -1,7 +1,15 @@
-import os 
+import os
+import socket
 os.environ['MASTER_ADDR'] = '127.0.0.1'
-os.environ['MASTER_PORT'] = '29500'
 os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
+
+
+def find_free_port():
+    """Ask the OS for an unused TCP port so concurrent runs (e.g. one per
+    GPU via CUDA_VISIBLE_DEVICES) don't collide on a fixed MASTER_PORT."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
 
 from transformers import (
     AutoTokenizer,
@@ -368,8 +376,10 @@ def parse_args():
     return args
 
 
-def main_worker(rank, world_size, model, tokenizer, structure_tokenizer, fim_tokens, raw_data, args):
+def main_worker(rank, world_size, master_port, model, tokenizer, structure_tokenizer, fim_tokens, raw_data, args):
 
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = str(master_port)
     os.environ['WORLD_SIZE'] = str(world_size)
     os.environ['RANK'] = str(rank)
 
@@ -487,9 +497,10 @@ if __name__ == "__main__":
     print(f'Number of samples: {len(raw_data)}')
 
     world_size = torch.cuda.device_count()
+    master_port = find_free_port()
     torch.multiprocessing.spawn(
         main_worker, nprocs=world_size,
-        args=(world_size, model, code_tokenizer, structure_tokenizer, fim_tokens, raw_data, args))
+        args=(world_size, master_port, model, code_tokenizer, structure_tokenizer, fim_tokens, raw_data, args))
 
     if args.compute_cceval_metric:
         compute_metric_stmt_cceval(args)
