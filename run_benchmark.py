@@ -245,6 +245,12 @@ def prepare_prompt(args,
 
         assert crossfile_cxt is not None
 
+        FRAGMENT_SEP = '# the below code fragment can be found in:'
+        fragments = crossfile_cxt.split(FRAGMENT_SEP)
+        header, fragments = fragments[0], fragments[1:]
+        fragments = fragments[:args.num_structure_tokens]
+        crossfile_cxt = header + ''.join(FRAGMENT_SEP + frag for frag in fragments)
+
         # making the same lr_budget as for other experiments, not considering cfc length
         lr_budget = args.max_seq_length - args.gen_length - 3 # 3 tokens for FIM
         rc_budget = int(lr_budget / (args.lc_rc_ratio + 1))
@@ -320,18 +326,9 @@ def prepare_prompt(args,
         raise ValueError(f'Unrecognized data_prefix: {args.data_prefix}')
 
 
-def build_dataset(args, code_tokenizer, ast_tokenizer, fim_tokens):
+def load_raw_data(args):
     with open(args.prompt_file) as f:
-        raw_data = [json.loads(line) for line in f.readlines()]
-
-    data = []
-    for entry in raw_data:
-
-        entry['llm_prompt'], entry['structure_ids'], entry['num_structure_tokens'] = \
-            prepare_prompt(args, code_tokenizer, ast_tokenizer, fim_tokens, entry)
-        data.append(entry)
-
-    return data
+        return [json.loads(line) for line in f.readlines()]
 
 
 def parse_args():
@@ -346,7 +343,7 @@ def parse_args():
     parser.add_argument("--task", type=str, choices=["line_completion", "api_completion", "function_completion"])
     parser.add_argument("--prompt_file", type=str, default=None, help="file with a list of prompts")
     parser.add_argument("--gen_length", type=int, default=50, help="max length of generated token sequence")
-    parser.add_argument("--max_seq_length", type=int, default=2048, help="max length of prompt")
+    parser.add_argument("--max_seq_length", type=int, default=2100, help="max length of prompt")
     parser.add_argument("--max_structure_length", type=int, default=512, help="max length of structure sequence")
     parser.add_argument("--right_context_length",
                         type=int,
@@ -371,7 +368,7 @@ def parse_args():
     return args
 
 
-def main_worker(rank, world_size, model, tokenizer, data, args):
+def main_worker(rank, world_size, model, tokenizer, structure_tokenizer, fim_tokens, raw_data, args):
 
     os.environ['WORLD_SIZE'] = str(world_size)
     os.environ['RANK'] = str(rank)
@@ -384,7 +381,13 @@ def main_worker(rank, world_size, model, tokenizer, data, args):
     model = model.to(device)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
-    data_per_rank = data[rank::world_size]
+    # Build prompts on this rank only (used to happen serially on rank 0 before spawn).
+    raw_per_rank = raw_data[rank::world_size]
+    data_per_rank = []
+    for entry in tqdm(raw_per_rank, desc=f"Rank {rank} preparing prompts", disable=(rank != 0)):
+        entry['llm_prompt'], entry['structure_ids'], entry['num_structure_tokens'] = \
+            prepare_prompt(args, tokenizer, structure_tokenizer, fim_tokens, entry)
+        data_per_rank.append(entry)
 
     # Process the data in parallel
     all_preds = []
@@ -469,8 +472,8 @@ if __name__ == "__main__":
 
     if args.model_checkpoint is not None:
         print(f"Loading checkpoint: {args.model_checkpoint}")
-        model = LlavaCodeForConditionalGeneration(
-            config=configuration, model_path=args.model_checkpoint)
+        model = LlavaCodeForConditionalGeneration.load_from_checkpoint(
+            args.model_checkpoint, config=configuration, strict=False)
     else:
         model = LlavaCodeForConditionalGeneration(configuration)
     if args.projector_checkpoint:
@@ -480,11 +483,13 @@ if __name__ == "__main__":
 
     fim_tokens = get_fim_tokens(args.text_model_id)
     print('fim tokens:', fim_tokens)
-    data = build_dataset(args, code_tokenizer, structure_tokenizer, fim_tokens)
-    print(f'Number of samples: {len(data)}')
+    raw_data = load_raw_data(args)
+    print(f'Number of samples: {len(raw_data)}')
 
     world_size = torch.cuda.device_count()
-    torch.multiprocessing.spawn(main_worker, nprocs=world_size, args=(world_size, model, code_tokenizer, data, args))
+    torch.multiprocessing.spawn(
+        main_worker, nprocs=world_size,
+        args=(world_size, model, code_tokenizer, structure_tokenizer, fim_tokens, raw_data, args))
 
     if args.compute_cceval_metric:
         compute_metric_stmt_cceval(args)
