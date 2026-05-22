@@ -351,6 +351,15 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.tokenizer.add_tokens([STRUCTURE_TOKEN])
         if self.tokenizer.pad_token_id is None:  # case with starcoder
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        # End-of-completion markers: a FIM completion ends here. StarCoder ends with
+        # <file_sep> (NOT its eos <|endoftext|>); Qwen with <|endoftext|>/<|file_sep|>.
+        # Used to stop SCST rollouts, mask the policy gradient at the first marker,
+        # and cut the reward text so it isn't scored on over-generation.
+        self.completion_stop_token_ids = [self.tokenizer.eos_token_id]
+        for _sep in ('<file_sep>', '<|file_sep|>'):
+            _sid = self.tokenizer.convert_tokens_to_ids(_sep)
+            if isinstance(_sid, int) and _sid >= 0 and self.tokenizer.convert_ids_to_tokens(_sid) == _sep:
+                self.completion_stop_token_ids.append(_sid)
         print(f'Structure token: {STRUCTURE_TOKEN}')
         self.post_init()
 
@@ -718,6 +727,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=False,
                 pad_token_id=pad_id,
+                eos_token_id=self.completion_stop_token_ids,
             )
             greedy_rewards, em_list, es_list, cp_list, wji_list = batch_rewards(greedy_ids)
 
@@ -731,6 +741,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
                     pad_token_id=pad_id,
+                    eos_token_id=self.completion_stop_token_ids,
                 )
                 sampled_rewards, em_list, es_list, cp_list, wji_list = batch_rewards(sampled_ids)
 
@@ -739,7 +750,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 # Correct even when pad_token_id == eos_token_id (e.g. StarCoder):
                 # eos_in_gen is True at every post-EOS pad-fill position
                 gen_tokens = sampled_ids[:, max_prompt_len:]
-                eos_in_gen = (gen_tokens == eos_id)
+                stop_ids_t = torch.tensor(self.completion_stop_token_ids, device=gen_tokens.device)
+                eos_in_gen = torch.isin(gen_tokens, stop_ids_t)
                 cum_eos = eos_in_gen.cumsum(dim=1)
                 gen_valid = (cum_eos == 0) | ((cum_eos == 1) & eos_in_gen)
                 sampled_input_ids = sampled_ids[:, :-1]
@@ -837,8 +849,11 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         gold_text = self.tokenizer.decode(gold, skip_special_tokens=True)
         num_lines = len(gold_text.split('\n'))
 
-        # ids out of tokenizer vocab might occur
-        pred_tokens = self.tokenizer.convert_ids_to_tokens(pred, skip_special_tokens=True)
+        # Keep special tokens so the <file_sep>/<fim_*> end-of-completion markers
+        # survive into pred_text for truncate_trash to cut on; with skip=True they'd be
+        # deleted first, gluing over-generation onto the answer (StarCoder only — Qwen's
+        # markers are non-special). ids out of tokenizer vocab still map to None below.
+        pred_tokens = self.tokenizer.convert_ids_to_tokens(pred, skip_special_tokens=False)
         pred_tokens = [t for t in pred_tokens if t is not None] 
         pred_text = self.tokenizer.convert_tokens_to_string(pred_tokens)
         pred_text = truncate_trash(pred_text)  # truncating everyting after the first transh token
@@ -999,6 +1014,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
                     pad_token_id=pad_id,
+                    eos_token_id=self.completion_stop_token_ids,
                 )
 
                 # Per-sample metrics + reward
@@ -1015,7 +1031,8 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 # gen_valid is True up to and including the first EOS, False after.
                 # Works for pad==eos (StarCoder) and pad!=eos (Qwen).
                 gen_tokens = greedy_ids[:, max_prompt_len:]
-                eos_in_gen = (gen_tokens == eos_id)
+                stop_ids_t = torch.tensor(self.completion_stop_token_ids, device=gen_tokens.device)
+                eos_in_gen = torch.isin(gen_tokens, stop_ids_t)
                 cum_eos = eos_in_gen.cumsum(dim=1)
                 gen_valid = (cum_eos == 0) | ((cum_eos == 1) & eos_in_gen)
                 greedy_input_ids = greedy_ids[:, :-1]
