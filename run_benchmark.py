@@ -421,11 +421,11 @@ def main_worker(rank, world_size, master_port, model, tokenizer, structure_token
                     do_sample=args.do_sample,
                     max_new_tokens=args.gen_length)
 
-            prediction = tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=True)
-
-            # Manual removal of special tokens
-            # if 'qwen' in args.text_model_id.lower():
-            #     prediction = re.sub(PATTERN, "", prediction)
+            # Keep special tokens so truncate_trash can cut at the completion
+            # boundary (<file_sep>/<|endoftext|>/fim markers). With
+            # truncate_trash drops everything from the
+            # first marker on, leaving a clean completion.
+            prediction = tokenizer.decode(cur_pred[0][cut_at:], skip_special_tokens=False)
 
             all_preds.append({
                 "task_id": entry["metadata"]["task_id"],
