@@ -72,7 +72,11 @@ if __name__ == "__main__":
     text_config = AutoConfig.from_pretrained(args.text_model_id)
     text_config.model_id = args.text_model_id
     if uses_structure:
-        text_config.vocab_size = len(code_tokenizer)
+        # Never shrink: Qwen2.5-Coder has config.vocab_size (152064) > len(tokenizer)
+        # (reserved rows), and len(code_tokenizer) here (151666 incl. <CODE_STRUCTURE>) is
+        # still smaller — so keep the larger existing size; the structure token's id already
+        # fits. StarCoder (sizes equal) grows by 1. Shrinking would corrupt the frozen LM.
+        text_config.vocab_size = max(text_config.vocab_size, len(code_tokenizer))
         print(f'Resizing model embeddings to a new vocab size of {text_config.vocab_size}')
     configuration = LlavaCodeConfig(structure_config, text_config,
                                     pad_token_id=code_tokenizer.pad_token_id,

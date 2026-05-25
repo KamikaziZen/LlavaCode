@@ -342,9 +342,17 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.model = LlavaCodeModel(config, model_path)
         # self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
-        self.vocab_size = self.config.text_config.vocab_size
         print(f'Embeddings dim before resizing: {self.language_model.get_input_embeddings().weight.data.shape}')
-        self.language_model.resize_token_embeddings(self.vocab_size)
+        # Never shrink the embedding table. Some LMs (e.g. Qwen2.5-Coder) ship with
+        # config.vocab_size > len(tokenizer) — extra reserved/padding rows — so resizing
+        # down to len(tokenizer)+1 would truncate the embeddings AND the untied lm_head,
+        # corrupting the frozen LM (CE explodes to ~20, generations are garbage). The
+        # <CODE_STRUCTURE> id already fits inside that padded table, so no resize is needed
+        # there; StarCoder (config.vocab_size == len(tokenizer)) still grows by exactly 1.
+        target_vocab_size = max(self.language_model.get_input_embeddings().weight.shape[0],
+                                self.config.text_config.vocab_size)
+        self.language_model.resize_token_embeddings(target_vocab_size)
+        self.vocab_size = self.language_model.get_input_embeddings().weight.shape[0]
         print(f'Embeddings dim after resizing: {self.language_model.get_input_embeddings().weight.data.shape}')
         self.pad_token_id = config.pad_token_id
         self.tokenizer = AutoTokenizer.from_pretrained(config.text_config.model_id, use_fast=False)
