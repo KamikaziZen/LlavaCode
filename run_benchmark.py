@@ -399,6 +399,11 @@ def main_worker(rank, world_size, master_port, model, tokenizer, structure_token
             prepare_prompt(args, tokenizer, structure_tokenizer, fim_tokens, entry)
         data_per_rank.append(entry)
 
+    # Forbid generating the <CODE_STRUCTURE> placeholder: it has no place in a completion
+    # and truncate_trash does not strip it, so a stray one would corrupt EM/ES. (FIM /
+    # <file_sep> markers are left emittable — they are the legit completion boundaries.)
+    structure_token_id = tokenizer.convert_tokens_to_ids(STRUCTURE_TOKEN)
+
     # Process the data in parallel
     all_preds = []
     for entry in tqdm(data_per_rank, desc=f"Rank {rank} processing"):
@@ -414,6 +419,7 @@ def main_worker(rank, world_size, master_port, model, tokenizer, structure_token
                     do_sample=args.do_sample,
                     structure_values=structure_ids,
                     num_structure_tokens=num_structure_tokens.to(device),
+                    suppress_tokens=[structure_token_id],
                     max_new_tokens=args.gen_length)
             else:
                 cur_pred = model.module.generate(

@@ -677,11 +677,19 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             loss += self.alpha_kl * kl_loss
 
         if self.alpha_scst is not None and self.alpha_scst > .0:
-            fim_middle_id = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)[2]
+            fim_ids = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)
+            fim_middle_id = fim_ids[2]
             eos_id = self.tokenizer.eos_token_id
             pad_id = self.tokenizer.pad_token_id
             batch_size = input_ids.shape[0]
             n_samples = 1
+
+            # Tokens the rollout must never emit: the <CODE_STRUCTURE> placeholder — its
+            # embedding slots are filled by masked_scatter from struct_feats, so a
+            # *generated* one would make (input_ids == structure_token_id) outnumber
+            # structure_features and trip the assert in LlavaCodeModel.forward — plus the
+            # FIM control tokens, which have no place in a completion rollout.
+            suppress_ids = [self.config.structure_token_id] + [t for t in fim_ids if t is not None]
 
             # Per-sample prompt length = position of <|fim_middle|> + 1
             fim_mask = (input_ids == fim_middle_id)
@@ -726,6 +734,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 structure_features=struct_feats.detach(),
                 num_structure_tokens=num_structure_tokens,
                 max_new_tokens=50, do_sample=False,
+                suppress_tokens=suppress_ids,
                 pad_token_id=pad_id,
                 eos_token_id=self.completion_stop_token_ids,
             )
@@ -740,6 +749,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     structure_features=struct_feats.detach(),
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=True, top_p=0.9, temperature=0.9,
+                    suppress_tokens=suppress_ids,
                     pad_token_id=pad_id,
                     eos_token_id=self.completion_stop_token_ids,
                 )
@@ -980,10 +990,16 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                 loss += self.alpha_kl * kl_loss
 
             if self.alpha_scst is not None and self.alpha_scst > .0:
-                fim_middle_id = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)[2]
+                fim_ids = self.tokenizer.convert_tokens_to_ids(self.model.fim_tokens)
+                fim_middle_id = fim_ids[2]
                 eos_id = self.tokenizer.eos_token_id
                 pad_id = self.tokenizer.pad_token_id
                 batch_size = input_ids.shape[0]
+
+                # Forbid the rollout from emitting the <CODE_STRUCTURE> placeholder (its
+                # slots are filled by masked_scatter, so a generated one desyncs the mask
+                # vs. structure_features and trips the assert in forward) or FIM tokens.
+                suppress_ids = [self.config.structure_token_id] + [t for t in fim_ids if t is not None]
 
                 # Per-sample prompt length
                 fim_mask = (input_ids == fim_middle_id)
@@ -1013,6 +1029,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
                     structure_features=struct_feats,
                     num_structure_tokens=num_structure_tokens,
                     max_new_tokens=50, do_sample=False,
+                    suppress_tokens=suppress_ids,
                     pad_token_id=pad_id,
                     eos_token_id=self.completion_stop_token_ids,
                 )
