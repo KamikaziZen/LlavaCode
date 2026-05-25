@@ -151,9 +151,9 @@ if __name__ == "__main__":
 
     callbacks = []
     callbacks = [LearningRateMonitor(logging_interval='step')]
+    run_name = f"{args.text_model_id.split('/')[-1]}_{args.structure_model_id.split('/')[-1]}_{args.exp_name}"
     ckpt_dir = args.ckpt_dir
     if ckpt_dir is not None:
-        run_name = f"{args.text_model_id.split('/')[-1]}_{args.structure_model_id.split('/')[-1]}_{args.exp_name}"
         ckpt_dir = os.path.join(ckpt_dir, run_name)
     checkpoint_callback = ModelCheckpoint(
         dirpath=ckpt_dir,
@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
     tags = [args.text_model_id.split('/')[-1], args.structure_model_id.split('/')[-1], 'TheStack2', args.language]
     clearml_logger = ClearMLLogger(args.log_dir, project_name='LlavaCode', task_name=args.exp_name, tags=tags)
-    csv_logger = CSVLogger(args.log_dir, name=args.exp_name, version="")
+    csv_logger = CSVLogger(args.log_dir, name=run_name, version="")
 
     logger.info('Initializing PL Trainer...')
     custom_trainer_kwargs = {
