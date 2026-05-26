@@ -403,6 +403,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
         self.alpha_ce = self.trainer_args.alpha_ce
 
         self.reward = self.trainer_args.reward
+        self.scst_n_samples = self.trainer_args.scst_n_samples
 
         if stage == 'fit':
             # Hyperparameters and Configuration
@@ -690,7 +691,7 @@ class LlavaCodeForConditionalGeneration(LlavaCodePreTrainedModel, GenerationMixi
             eos_id = self.tokenizer.eos_token_id
             pad_id = self.tokenizer.pad_token_id
             batch_size = input_ids.shape[0]
-            n_samples = 1
+            n_samples = self.scst_n_samples
 
             # Tokens the rollout must never emit: the <CODE_STRUCTURE> placeholder — its
             # embedding slots are filled by masked_scatter from struct_feats, so a

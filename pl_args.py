@@ -51,6 +51,7 @@ def add_pl_args(parent_parser):
     parser.add_argument("--kl_temperature", type=float, help="Temperature coefficient for calculation KL-Divergency loss")
     parser.add_argument("--distill_topk", type=int, help='Top-k token to distill in the self-distillation part')
     parser.add_argument("--reward", type=str, help='Expression, that will be evaluated as reward function, using eval(). Examples: em, es, wji, cumprec, 2*em+es, em+es+wji+cumprec')
+    parser.add_argument("--scst_n_samples", type=int, default=1, help="Number of sampled rollouts per example for the SCST advantage (averaged over them). Higher = lower variance at ~N x the generate() cost.")
     return parent_parser
 
 
